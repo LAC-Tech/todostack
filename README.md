@@ -6,6 +6,8 @@ The program operates as a REPL.
 
 ## Requirements
 
+No dependencies.
+
 I've only tested this on linux 64 bit. I use POSIX functions exclusively, so I hope it works on other Unix-like systems.
 
 I don't personally care about windows but pull requests welcome.
