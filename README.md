@@ -40,6 +40,6 @@ In the REPL use the following commands:
 
 - `s`: Swap the top two items on the stack (requires at least 2 items).
 
-- `.`: Print all items on the stack, from bottom to top.
+- `.`: Print all items on the stack, from top to bottom.
 
 - `q`: Quit the program

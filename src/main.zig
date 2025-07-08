@@ -177,9 +177,14 @@ fn repl(stack: *Stack) !void {
         } else if (mem.eql(u8, trimmed, "q")) {
             return;
         } else if (mem.eql(u8, trimmed, ".")) {
-            for (stack.items) |item| {
+            for (0..stack.len) |i| {
+                const item = stack.items[stack.len - 1 - i];
                 if (isEmptyItem(item)) break;
-                try stdout.print("{s}\n", .{item});
+                if (i == 0) {
+                    try stdout.print("\x1B[1m{s}\x1B[0m\n", .{item});
+                } else {
+                    try stdout.print("{s}\n", .{item});
+                }
             }
         } else if (isStringLiteral(trimmed)) {
             // Extract content between quotes
