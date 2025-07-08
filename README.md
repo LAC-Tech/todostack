@@ -1,4 +1,4 @@
-TODO stack models todo items as a FIFO stack.
+TDS ("TODO Stack") models todo items as a FIFO stack.
 
 It uses a memory mapped file of max 64 stack items, up to max 64 bytes long. The file is all zeroed out apart of the TODO items, so should be diffable in version control.
 
