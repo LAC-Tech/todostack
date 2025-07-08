@@ -8,6 +8,8 @@ const mem = std.mem;
 const posix = std.posix;
 
 const c = @cImport({
+    @cDefine("_DEFAULT_SOURCE", {});
+    @cDefine("_XOPEN_SOURCE", {});
     @cDefine("TB_IMPL", {});
     @cInclude("termbox2.h");
 });
@@ -60,7 +62,7 @@ pub fn main() !void {
     debug.assert(bytes.len == file_size);
 
     var stack = Stack.init(bytes);
-    try repl(&stack);
+    try tui(&stack);
 }
 
 fn printUsage() void {
@@ -160,60 +162,140 @@ const Stack = struct {
     }
 };
 
-fn repl(stack: *Stack) !void {
-    var buffer: [1024]u8 = undefined;
-    const stdin = io.getStdIn().reader();
-    const stdout = io.getStdIn().writer();
+const InputMode = enum {
+    normal,
+    push,
+};
+
+fn tui(stack: *Stack) !void {
+    _ = c.tb_init();
+    defer _ = c.tb_shutdown();
+
+    var input_mode = InputMode.normal;
+    var input_buffer: [max_item_size]u8 = undefined;
+    var input_len: usize = 0;
+    var error_msg: ?[]const u8 = null;
 
     while (true) {
-        try stdout.print("> ", .{});
-        const input = try stdin.readUntilDelimiterOrEof(&buffer, '\n');
-        if (input == null) break;
+        _ = c.tb_clear();
 
-        const trimmed = mem.trim(u8, input.?, " \t\r\n");
-        if (mem.eql(u8, trimmed, "d")) {
-            stack.drop() catch |err| {
-                try stdout.print("{}\n", .{err});
-            };
-        } else if (mem.eql(u8, trimmed, "s")) {
-            stack.swap() catch |err| {
-                try stdout.print("{}\n", .{err});
-            };
-        } else if (mem.eql(u8, trimmed, "q")) {
-            return;
-        } else if (mem.eql(u8, trimmed, ".")) {
-            for (0..stack.len) |i| {
-                const item = stack.items[stack.len - 1 - i];
-                if (isEmptyItem(item)) break;
-                if (i == 0) {
-                    try stdout.print("\x1B[1m{s}\x1B[0m\n", .{item});
-                } else {
-                    try stdout.print("{s}\n", .{item});
+        // Draw stack
+        const height = c.tb_height();
+        var y: i32 = 1;
+
+        // Title
+        _ = c.tb_printf(0, 0, c.TB_CYAN, 0, "Stack (len: %d)", stack.len);
+
+        // Draw items from top to bottom
+        for (0..stack.len) |i| {
+            const item = stack.items[stack.len - 1 - i];
+            if (isEmptyItem(item)) break;
+
+            const fg = if (i == 0) c.TB_GREEN | c.TB_BOLD else c.TB_WHITE;
+            _ = c.tb_printf(2, y, @intCast(fg), 0, "%s", &item);
+            y += 1;
+
+            if (y >= height - 3) break; // Leave space for input and help
+        }
+
+        // Input line
+        if (input_mode == .push) {
+            _ = c.tb_printf(
+                0,
+                height - 3,
+                c.TB_YELLOW,
+                0,
+                "Push: %.*s",
+                input_len,
+                &input_buffer,
+            );
+            _ = c.tb_set_cursor(@as(c_int, @intCast(6 + input_len)), height - 3);
+        } else {
+            _ = c.tb_hide_cursor();
+        }
+
+        // Error message
+        if (error_msg) |msg| {
+            _ = c.tb_printf(0, height - 2, c.TB_RED, 0, "Error: %s", &msg);
+        }
+
+        // Help line
+        const help = if (input_mode == .push)
+            "Enter to confirm, Esc to cancel"
+        else
+            "Commands: (p)ush, (d)rop, (s)wap, (q)uit";
+        _ = c.tb_printf(0, height - 1, c.TB_BLUE, 0, "%s", &help);
+
+        _ = c.tb_present();
+
+        // Handle input
+        var ev: c.struct_tb_event = undefined;
+        _ = c.tb_poll_event(&ev);
+
+        error_msg = null; // Clear error after each input
+
+        if (ev.type == c.TB_EVENT_KEY) {
+            if (input_mode == .push) {
+                if (ev.key == c.TB_KEY_ENTER) {
+                    // Confirm push
+                    if (input_len > 0) {
+                        stack.push(input_buffer[0..input_len]) catch |err| {
+                            error_msg = switch (err) {
+                                error.StackOverflow => "Stack overflow",
+                                error.ItemTooLong => "Item too long",
+                                else => "Unknown error",
+                            };
+                        };
+                    }
+                    input_mode = .normal;
+                    input_len = 0;
+                } else if (ev.key == c.TB_KEY_ESC) {
+                    // Cancel push
+                    input_mode = .normal;
+                    input_len = 0;
+                } else if (ev.key == c.TB_KEY_BACKSPACE or ev.key == c.TB_KEY_BACKSPACE2) {
+                    // Backspace
+                    if (input_len > 0) {
+                        input_len -= 1;
+                    }
+                } else if (ev.ch > 0 and ev.ch < 127) {
+                    // Regular character
+                    if (input_len < max_item_size - 1) {
+                        input_buffer[input_len] = @intCast(ev.ch);
+                        input_len += 1;
+                    }
+                }
+            } else {
+                // Normal mode
+                switch (ev.ch) {
+                    'p' => {
+                        input_mode = .push;
+                        input_len = 0;
+                    },
+                    'd' => {
+                        stack.drop() catch |err| {
+                            error_msg = switch (err) {
+                                error.Underflow => "Stack underflow",
+                                else => "Unknown error",
+                            };
+                        };
+                    },
+                    's' => {
+                        stack.swap() catch |err| {
+                            error_msg = switch (err) {
+                                error.Underflow => "Not enough items to swap",
+                                else => "Unknown error",
+                            };
+                        };
+                    },
+                    'q' => return,
+                    else => {
+                        if (ev.key == c.TB_KEY_ESC) return;
+                    },
                 }
             }
-        } else if (isStringLiteral(trimmed)) {
-            // Extract content between quotes
-            const content = trimmed[1 .. trimmed.len - 1];
-            if (content.len == 0) {
-                try stdout.print("Empty string\n", .{});
-                continue;
-            }
-
-            stack.push(content) catch |err| {
-                try stdout.print("{}\n", .{err});
-            };
-        } else {
-            debug.print("Err: unknown command '{s}'\n", .{trimmed});
         }
     }
-}
-
-fn isStringLiteral(s: []const u8) bool {
-    if (2 > s.len) return false;
-    if (s[0] != '"') return false;
-    if (s[s.len - 1] != '"') return false;
-
-    return true;
 }
 
 fn isEmptyItem(item: [max_item_size]u8) bool {

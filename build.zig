@@ -11,6 +11,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    exe.linkLibC();
+    exe.linkSystemLibrary("m");
+    exe.addIncludePath(b.path("src"));
+
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);
