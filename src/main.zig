@@ -7,6 +7,11 @@ const io = std.io;
 const mem = std.mem;
 const posix = std.posix;
 
+const c = @cImport({
+    @cDefine("TB_IMPL", {});
+    @cInclude("termbox2.h");
+});
+
 const max_stack_size = 64;
 const max_item_size = 64;
 const file_size = max_stack_size * max_item_size;
@@ -31,11 +36,9 @@ pub fn main() !void {
             debug.print("Error creating stack '{s}': {}\n", .{ args[2], err });
             return;
         };
-    } else blk: {
-        break :blk file.open(args[1]) catch |err| {
-            debug.print("Error opening stack '{s}': {}\n", .{ args[1], err });
-            return;
-        };
+    } else file.open(args[1]) catch |err| {
+        debug.print("Error opening stack '{s}': {}\n", .{ args[1], err });
+        return;
     };
 
     defer {
