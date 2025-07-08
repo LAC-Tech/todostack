@@ -1,12 +1,12 @@
 TDS ("TODO Stack") models todo items as a FIFO stack.
 
-It uses a memory mapped file of max 64 stack items, up to max 64 bytes long. The file is all zeroed out apart of the TODO items, so should be diffable in version control.
+It uses a memory mapped file of max 64 stack items, up to max 64 bytes long. The file is all zeroed out apart from the TODO items, so should be diffable in version control.
 
 The program operates as a REPL.
 
 ## Requirements
 
-I've only tested this on linux 64 bit. I use posix commands exclusively, so I hope it works on other Unix systems.
+I've only tested this on linux 64 bit. I use POSIX functions exclusively, so I hope it works on other Unix-like systems.
 
 I don't personally care about windows but pull requests welcome.
 
@@ -32,7 +32,7 @@ tds -n <name>.tds.bin
 
 In the REPL use the following commands:
 
-- `"text"`: Push a string (e.g., "buy milk") onto the stack. Must be enclosed in double quotes. Max length: 63 bytes.
+- `"text"`: Push a string (e.g., "buy milk") onto the stack. Must be enclosed in double quotes. Max length: 64 bytes.
 
 - `d`: Drop the top item from the stack.
 
