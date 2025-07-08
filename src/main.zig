@@ -27,12 +27,12 @@ pub fn main() !void {
             printUsage();
             return;
         }
-        break :blk createFile(args[2]) catch |err| {
+        break :blk file.create(args[2]) catch |err| {
             debug.print("Error creating stack '{s}': {}\n", .{ args[2], err });
             return;
         };
     } else blk: {
-        break :blk openFile(args[1]) catch |err| {
+        break :blk file.open(args[1]) catch |err| {
             debug.print("Error opening stack '{s}': {}\n", .{ args[1], err });
             return;
         };
@@ -66,41 +66,43 @@ fn printUsage() void {
     debug.print("\ttds -n <name>\t- Create new file <name>.{s}\n", .{file_ext});
 }
 
-fn createFile(name: []const u8) !posix.fd_t {
-    var filename_buf: [256]u8 = undefined;
-    const filename = try fmt.bufPrint(&filename_buf, "{s}.{s}", .{ name, file_ext });
+const file = struct {
+    fn create(name: []const u8) !posix.fd_t {
+        var filename_buf: [256]u8 = undefined;
+        const filename = try fmt.bufPrint(&filename_buf, "{s}.{s}", .{ name, file_ext });
 
-    const fd = try posix.open(
-        filename,
-        .{ .ACCMODE = .RDWR, .CREAT = true, .EXCL = true },
-        0o666,
-    );
-
-    try posix.ftruncate(fd, file_size);
-
-    debug.print("Created new file: {s}\n", .{filename});
-    return fd;
-}
-
-fn openFile(filename: []const u8) !posix.fd_t {
-    const fd = try posix.open(
-        filename,
-        .{ .ACCMODE = .RDWR },
-        0,
-    );
-
-    const stat = try posix.fstat(fd);
-    if (stat.size != file_size) {
-        debug.print(
-            "Error: File {s} is not exactly {} bytes\n",
-            .{ filename, file_size },
+        const fd = try posix.open(
+            filename,
+            .{ .ACCMODE = .RDWR, .CREAT = true, .EXCL = true },
+            0o666,
         );
-        return error.InvalidFileSize;
+
+        try posix.ftruncate(fd, file_size);
+
+        debug.print("Created new file: {s}\n", .{filename});
+        return fd;
     }
 
-    debug.print("Opened file: {s}\n", .{filename});
-    return fd;
-}
+    fn open(filename: []const u8) !posix.fd_t {
+        const fd = try posix.open(
+            filename,
+            .{ .ACCMODE = .RDWR },
+            0,
+        );
+
+        const stat = try posix.fstat(fd);
+        if (stat.size != file_size) {
+            debug.print(
+                "Error: File {s} is not exactly {} bytes\n",
+                .{ filename, file_size },
+            );
+            return error.InvalidFileSize;
+        }
+
+        debug.print("Opened file: {s}\n", .{filename});
+        return fd;
+    }
+};
 
 const Stack = struct {
     items: *[max_stack_size][max_item_size]u8,
