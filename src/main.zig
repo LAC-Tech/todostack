@@ -63,7 +63,7 @@ pub fn main() !void {
 fn printUsage() void {
     debug.print("Usage:\n", .{});
     debug.print("\ttds <file.{s}>\t- Open existing file\n", .{file_ext});
-    debug.print("\ttds -n <name>\t- Create new file name.{s}\n", .{file_ext});
+    debug.print("\ttds -n <name>\t- Create new file <name>.{s}\n", .{file_ext});
 }
 
 fn createFile(name: []const u8) !posix.fd_t {
