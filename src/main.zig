@@ -1,9 +1,11 @@
 const std = @import("std");
+const ncurses = @cImport({
+    @cInclude("ncurses.h");
+});
 const debug = std.debug;
 const fmt = std.fmt;
 const fs = std.fs;
 const heap = std.heap;
-const io = std.io;
 const mem = std.mem;
 const posix = std.posix;
 
@@ -46,18 +48,18 @@ pub fn main() !void {
     }
 
     const bytes = try posix.mmap(
-        null, // OS chooses virtual address
+        null,
         file_size,
         posix.PROT.READ | posix.PROT.WRITE,
-        .{ .TYPE = .SHARED }, // Changes are written to file
+        .{ .TYPE = .SHARED },
         fd,
-        0, // offset in file
+        0,
     );
 
     debug.assert(bytes.len == file_size);
 
     var stack = Stack.init(bytes);
-    try repl(&stack);
+    try runNcurses(&stack);
 }
 
 fn printUsage() void {
@@ -78,7 +80,6 @@ const file = struct {
         );
 
         try posix.ftruncate(fd, file_size);
-
         debug.print("Created new file: {s}\n", .{filename});
         return fd;
     }
@@ -92,10 +93,7 @@ const file = struct {
 
         const stat = try posix.fstat(fd);
         if (stat.size != file_size) {
-            debug.print(
-                "Error: File {s} is not exactly {} bytes\n",
-                .{ filename, file_size },
-            );
+            debug.print("Error: File {s} is not exactly {} bytes\n", .{ filename, file_size });
             return error.InvalidFileSize;
         }
 
@@ -111,13 +109,8 @@ const Stack = struct {
 
     fn init(bytes: []u8) Stack {
         debug.assert(bytes.len == file_size);
-        const data = @as(
-            *[max_stack_size][max_item_size]u8,
-            @ptrCast(bytes.ptr),
-        );
-
+        const data = @as(*[max_stack_size][max_item_size]u8, @ptrCast(bytes.ptr));
         var len: u8 = 0;
-
         for (data) |item| {
             if (isEmptyItem(item)) break;
             len += 1;
@@ -157,60 +150,108 @@ const Stack = struct {
     }
 };
 
-fn repl(stack: *Stack) !void {
-    var buffer: [1024]u8 = undefined;
-    const stdin = io.getStdIn().reader();
-    const stdout = io.getStdIn().writer();
+fn runNcurses(stack: *Stack) !void {
+    _ = ncurses.initscr();
+    defer _ = ncurses.endwin();
+
+    _ = ncurses.cbreak();
+    _ = ncurses.noecho();
+    _ = ncurses.keypad(ncurses.stdscr, true);
+    _ = ncurses.curs_set(0); // Hide cursor by default
+
+    var input_buf = [_]u8{0} ** max_item_size;
+    var input_len: usize = 0;
+    var input_mode = false;
+    var error_msg = [_]u8{0} ** 128;
 
     while (true) {
-        try stdout.print("> ", .{});
-        const input = try stdin.readUntilDelimiterOrEof(&buffer, '\n');
-        if (input == null) break;
+        renderStack(stack, input_mode, input_buf[0..input_len], &error_msg);
 
-        const trimmed = mem.trim(u8, input.?, " \t\r\n");
-        if (mem.eql(u8, trimmed, "d")) {
-            stack.drop() catch |err| {
-                try stdout.print("{}\n", .{err});
-            };
-        } else if (mem.eql(u8, trimmed, "s")) {
-            stack.swap() catch |err| {
-                try stdout.print("{}\n", .{err});
-            };
-        } else if (mem.eql(u8, trimmed, "q")) {
-            return;
-        } else if (mem.eql(u8, trimmed, ".")) {
-            for (0..stack.len) |i| {
-                const item = stack.items[stack.len - 1 - i];
-                if (isEmptyItem(item)) break;
-                if (i == 0) {
-                    try stdout.print("\x1B[1m{s}\x1B[0m\n", .{item});
-                } else {
-                    try stdout.print("{s}\n", .{item});
+        const ch = ncurses.getch();
+        if (input_mode) {
+            if (ch == '\n') { // Enter
+                if (input_len > 0) {
+                    stack.push(input_buf[0..input_len]) catch |err| {
+                        _ = try fmt.bufPrint(&error_msg, "Error: {}", .{err});
+                    };
                 }
+                input_len = 0;
+                input_mode = false;
+                _ = ncurses.curs_set(0);
+                @memset(&error_msg, 0);
+            } else if (ch == 27) { // Escape
+                input_len = 0;
+                input_mode = false;
+                _ = ncurses.curs_set(0);
+                @memset(&error_msg, 0);
+            } else if (ch == 127 or ch == 8) { // Backspace
+                if (input_len > 0) input_len -= 1;
+            } else if (ch >= 32 and ch <= 126 and input_len < max_item_size - 1) {
+                input_buf[input_len] = @intCast(ch);
+                input_len += 1;
             }
-        } else if (isStringLiteral(trimmed)) {
-            // Extract content between quotes
-            const content = trimmed[1 .. trimmed.len - 1];
-            if (content.len == 0) {
-                try stdout.print("Empty string\n", .{});
-                continue;
-            }
-
-            stack.push(content) catch |err| {
-                try stdout.print("{}\n", .{err});
-            };
         } else {
-            debug.print("Err: unknown command '{s}'\n", .{trimmed});
+            switch (ch) {
+                'q' => break,
+                's' => {
+                    stack.swap() catch |err| {
+                        _ = try fmt.bufPrint(&error_msg, "Error: {}", .{err});
+                    };
+                },
+                'd' => {
+                    stack.drop() catch |err| {
+                        _ = try fmt.bufPrint(&error_msg, "Error: {}", .{err});
+                    };
+                },
+                'p' => {
+                    input_mode = true;
+                    input_len = 0;
+                    _ = ncurses.curs_set(1); // Show cursor
+                    @memset(&error_msg, 0);
+                },
+                else => {},
+            }
         }
     }
 }
 
-fn isStringLiteral(s: []const u8) bool {
-    if (2 > s.len) return false;
-    if (s[0] != '"') return false;
-    if (s[s.len - 1] != '"') return false;
+fn renderStack(stack: *Stack, input_mode: bool, input: []const u8, error_msg: []const u8) void {
+    _ = ncurses.erase();
+    const max_y = ncurses.getmaxy(ncurses.stdscr);
+    const max_y_usize: usize = @intCast(max_y);
 
-    return true;
+    // Draw stack, starting at y=0 unless in input mode (then y=1)
+    const stack_start_y: i32 = if (input_mode) 1 else 0;
+    const stack_display_limit: usize = @min(stack.len, max_y_usize - 2); // Reserve space for commands/error
+    for (0..stack_display_limit) |i| {
+        const item = stack.items[stack.len - 1 - i];
+        if (isEmptyItem(item)) break;
+        const str = std.mem.sliceTo(&item, 0);
+
+        const idx: i32 = @intCast(i);
+        if (i == 0) {
+            _ = ncurses.attron(ncurses.A_BOLD);
+            _ = ncurses.mvprintw(stack_start_y + idx, 0, "%.*s", str.len, str.ptr);
+            _ = ncurses.attroff(ncurses.A_BOLD);
+        } else {
+            _ = ncurses.mvprintw(stack_start_y + idx, 0, "%.*s", str.len, str.ptr);
+        }
+    }
+
+    // Draw input or commands at the bottom
+    if (input_mode) {
+        _ = ncurses.mvprintw(0, 0, "%.*s", input.len, input.ptr); // Input at (0,0)
+        _ = ncurses.move(0, @intCast(input.len)); // Move cursor to end of input
+    } else {
+        _ = ncurses.mvprintw(max_y - 1, 0, "Commands: s (swap), d (drop), p (push), q (quit)");
+    }
+
+    // Draw error message one row above commands if present
+    if (error_msg.len > 0 and !input_mode) {
+        _ = ncurses.mvprintw(max_y - 2, 0, "%.*s", error_msg.len, error_msg.ptr);
+    }
+
+    _ = ncurses.refresh();
 }
 
 fn isEmptyItem(item: [max_item_size]u8) bool {

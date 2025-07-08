@@ -10,7 +10,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-
+    exe.linkLibC();
+    exe.linkSystemLibrary("ncurses");
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);
