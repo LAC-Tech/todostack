@@ -2,13 +2,14 @@ const std = @import("std");
 const debug = std.debug;
 const fmt = std.fmt;
 const fs = std.fs;
+const io = std.io;
 const mem = std.mem;
 const posix = std.posix;
 const allocator = std.heap.page_allocator;
 
 const max_stack_size = 64;
 const max_item_size = 64;
-const file_size = 64 * 64;
+const file_size = max_stack_size * max_item_size;
 const file_ext = "tds.bin";
 
 pub fn main() !void {
@@ -20,7 +21,7 @@ pub fn main() !void {
         return;
     }
 
-    const file = if (mem.eql(u8, args[1], "-n")) blk: {
+    const fd = if (mem.eql(u8, args[1], "-n")) blk: {
         if (args.len < 3) {
             debug.print("Error: -n requires a name argument\n", .{});
             printUsage();
@@ -37,18 +38,21 @@ pub fn main() !void {
         };
     };
 
-    defer file.close();
+    defer posix.close(fd);
 
     const bytes = try posix.mmap(
         null, // OS chooses virtual address
         file_size,
         posix.PROT.READ | posix.PROT.WRITE,
         .{ .TYPE = .SHARED }, // Changes are written to file
-        file.handle, // file descriptor
+        fd,
         0, // offset in file
     );
 
     debug.assert(bytes.len == file_size);
+
+    var stack = Stack.init(bytes);
+    try repl(&stack);
 }
 
 fn printUsage() void {
@@ -57,27 +61,30 @@ fn printUsage() void {
     debug.print("\ttds -n <name>\t- Create new file name.{s}\n", .{file_ext});
 }
 
-fn createFile(name: []const u8) !fs.File {
+fn createFile(name: []const u8) !posix.fd_t {
     var filename_buf: [256]u8 = undefined;
-    const filename = try fmt.bufPrint(
-        &filename_buf,
-        "{s}.{s}",
-        .{ name, file_ext },
+    const filename = try fmt.bufPrint(&filename_buf, "{s}.{s}", .{ name, file_ext });
+
+    const fd = try posix.open(
+        filename,
+        .{ .ACCMODE = .RDWR, .CREAT = true, .EXCL = true },
+        0o666,
     );
 
-    const file = try fs.cwd().createFile(filename, .{ .exclusive = true });
-    const zeros = [_]u8{0} ** file_size;
-    try file.writeAll(&zeros);
+    try posix.ftruncate(fd, file_size);
 
     debug.print("Created new file: {s}\n", .{filename});
-    return file;
+    return fd;
 }
 
-fn openFile(filename: []const u8) !fs.File {
-    const file = try fs.cwd().openFile(filename, .{ .mode = .read_write });
+fn openFile(filename: []const u8) !posix.fd_t {
+    const fd = try posix.open(
+        filename,
+        .{ .ACCMODE = .RDWR },
+        0,
+    );
 
-    // Check file size
-    const stat = try file.stat();
+    const stat = try posix.fstat(fd);
     if (stat.size != file_size) {
         debug.print(
             "Error: File {s} is not exactly {} bytes\n",
@@ -87,7 +94,7 @@ fn openFile(filename: []const u8) !fs.File {
     }
 
     debug.print("Opened file: {s}\n", .{filename});
-    return file;
+    return fd;
 }
 
 const Stack = struct {
@@ -101,14 +108,31 @@ const Stack = struct {
     }
 
     fn push(self: *Stack, item: []const u8) !void {
-        if (self.top >= max_stack_size) return error.StackOverflow;
+        if (self.len >= max_stack_size) return error.StackOverflow;
         if (item.len >= max_item_size) return error.ItemTooLong;
         @memcpy(self.data[self.len][0..item.len], item);
         self.len += 1;
     }
 
     fn drop(self: *Stack) !void {
-        if (self.top == 0) return error.Underflow;
-        self.top -= 1;
+        if (self.len == 0) return error.Underflow;
+        self.len -= 1;
     }
 };
+
+fn repl(stack: *Stack) !void {
+    var buffer: [1024]u8 = undefined;
+    const stdin = io.getStdIn().reader();
+
+    while (true) {
+        const input = try stdin.readUntilDelimiterOrEof(&buffer, '\n');
+        if (input == null) break;
+
+        const trimmed = mem.trim(u8, input.?, " \t\r\n");
+        if (mem.eql(u8, trimmed, "drop")) {
+            try stack.drop();
+        } else if (trimmed.len > 0) {
+            try stack.push(trimmed);
+        }
+    }
+}
