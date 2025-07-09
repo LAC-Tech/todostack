@@ -2,10 +2,10 @@ const std = @import("std");
 const debug = std.debug;
 const fmt = std.fmt;
 const fs = std.fs;
-const heap = std.heap;
 const io = std.io;
 const mem = std.mem;
 const posix = std.posix;
+const process = std.process;
 
 const max_stack_size = 64;
 const max_item_size = 64;
@@ -13,29 +13,27 @@ const file_size = max_stack_size * max_item_size;
 const file_ext = "tds.bin";
 
 pub fn main() !void {
-    const args = try std.process.argsAlloc(heap.page_allocator);
-    defer std.process.argsFree(heap.page_allocator, args);
+    var args = process.args();
+    _ = args.next() orelse return;
 
-    if (args.len < 2) {
+    const filename = args.next() orelse {
         printUsage();
         return;
-    }
+    };
 
-    const fd = if (mem.eql(u8, args[1], "-n")) blk: {
-        if (args.len < 3) {
+    const fd = if (mem.eql(u8, filename, "-n")) blk: {
+        const name = args.next() orelse {
             debug.print("Error: -n requires a name argument\n", .{});
             printUsage();
             return;
-        }
-        break :blk file.create(args[2]) catch |err| {
-            debug.print("Error creating stack '{s}': {}\n", .{ args[2], err });
+        };
+        break :blk openFile(name, true) catch |err| {
+            debug.print("Error creating stack '{s}': {}\n", .{ name, err });
             return;
         };
-    } else blk: {
-        break :blk file.open(args[1]) catch |err| {
-            debug.print("Error opening stack '{s}': {}\n", .{ args[1], err });
-            return;
-        };
+    } else openFile(filename, false) catch |err| {
+        debug.print("Error opening stack '{s}': {}\n", .{ filename, err });
+        return;
     };
 
     defer {
@@ -46,20 +44,20 @@ pub fn main() !void {
     }
 
     const bytes = try posix.mmap(
-        null, // OS chooses virtual address
+        null,
         file_size,
         posix.PROT.READ | posix.PROT.WRITE,
-        .{ .TYPE = .SHARED }, // Changes are written to file
+        .{ .TYPE = .SHARED },
         fd,
-        0, // offset in file
+        0,
     );
 
     debug.assert(bytes.len == file_size);
 
     var stack = Stack.init(bytes);
     var tui = try TUI.init(&stack);
-    try tui.main_loop();
     defer tui.deinit();
+    try tui.mainLoop();
 }
 
 fn printUsage() void {
@@ -68,46 +66,29 @@ fn printUsage() void {
     debug.print("\ttds -n <name>\t- Create new file <name>.{s}\n", .{file_ext});
 }
 
-const file = struct {
-    fn create(name: []const u8) !posix.fd_t {
-        var filename_buf: [256]u8 = undefined;
-        const filename = try fmt.bufPrint(
-            &filename_buf,
-            "{s}.{s}",
-            .{ name, file_ext },
-        );
-
-        const fd = try posix.open(
-            filename,
-            .{ .ACCMODE = .RDWR, .CREAT = true, .EXCL = true },
-            0o666,
-        );
-
-        try posix.ftruncate(fd, file_size);
-
-        return fd;
-    }
-
-    fn open(filename: []const u8) !posix.fd_t {
-        const fd = try posix.open(
-            filename,
-            .{ .ACCMODE = .RDWR },
-            0,
-        );
-
+fn openFile(name: []const u8, create: bool) !posix.fd_t {
+    const filename = if (create) try fmt.allocPrint(
+        std.heap.page_allocator,
+        "{s}.{s}",
+        .{ name, file_ext },
+    ) else name;
+    defer if (create) std.heap.page_allocator.free(filename);
+    const flags: posix.O = if (create) .{
+        .ACCMODE = .RDWR,
+        .CREAT = true,
+        .EXCL = true,
+    } else .{
+        .ACCMODE = .RDWR,
+        .EXCL = true,
+    };
+    const fd = try posix.open(filename, flags, 0o666);
+    if (create) try posix.ftruncate(fd, file_size);
+    if (!create) {
         const stat = try posix.fstat(fd);
-        if (stat.size != file_size) {
-            debug.print(
-                "Error: File {s} is not exactly {} bytes\n",
-                .{ filename, file_size },
-            );
-            return error.InvalidFileSize;
-        }
-
-        debug.print("Opened file: {s}\n", .{filename});
-        return fd;
+        if (stat.size != file_size) return error.InvalidFileSize;
     }
-};
+    return fd;
+}
 
 const Stack = struct {
     items: *[max_stack_size][max_item_size]u8,
@@ -115,19 +96,13 @@ const Stack = struct {
     len: u8,
 
     fn init(bytes: []u8) Stack {
-        debug.assert(bytes.len == file_size);
-        const data = @as(
-            *[max_stack_size][max_item_size]u8,
-            @ptrCast(bytes.ptr),
-        );
-
+        const data = @as(*[max_stack_size][max_item_size]u8, @ptrCast(bytes.ptr));
         var len: u8 = 0;
-
-        for (data) |item| {
+        for (data, 0..) |item, i| {
             if (isEmptyItem(item)) break;
-            len += 1;
+            len = @intCast(i + 1);
         }
-        return Stack{
+        return .{
             .items = data,
             .temp_a = [_]u8{0} ** max_item_size,
             .len = len,
@@ -166,29 +141,14 @@ fn isEmptyItem(item: [max_item_size]u8) bool {
     return mem.allEqual(u8, &item, 0);
 }
 
-fn init_terms(fd: posix.fd_t) !struct {
-    original: posix.termios,
-    tui: posix.termios,
-} {
-    var term: posix.termios = undefined;
-    var rc = posix.system.tcgetattr(fd, &term);
-    if (rc != 0) return error.TcgetattrFailed;
-    const original = term;
-    term.lflag.ICANON = false;
-    term.lflag.ECHO = false;
-    rc = posix.system.tcsetattr(fd, .NOW, &term);
-    if (rc != 0) return error.TcsetattrFailed;
-    return .{ .original = original, .tui = term };
-}
-
 const buf_size = struct {
     const input = max_item_size + 1; // to allow room for newline;
     const err = 128;
 };
 
 const TUI = struct {
-    reader: io.Reader(std.fs.File, std.posix.ReadError, std.fs.File.read),
-    writer: io.Writer(std.fs.File, std.posix.WriteError, std.fs.File.write),
+    reader: io.Reader(fs.File, posix.ReadError, fs.File.read),
+    writer: io.Writer(fs.File, posix.WriteError, fs.File.write),
     stack: *Stack,
     terms: struct {
         original: posix.termios,
@@ -204,7 +164,6 @@ const TUI = struct {
         var ws: posix.winsize = undefined;
         const rc = posix.system.ioctl(1, posix.T.IOCGWINSZ, @intFromPtr(&ws));
         debug.assert(rc == 0);
-        debug.print("rows = {}\n", .{ws.row});
 
         var term: posix.termios = undefined;
         if (posix.system.tcgetattr(io.getStdIn().handle, &term) != 0) {
@@ -242,10 +201,10 @@ const TUI = struct {
         ) catch unreachable;
     }
 
-    fn main_loop(self: *@This()) !void {
+    fn mainLoop(self: *@This()) !void {
         while (true) {
             try self.writer.writeAll(cc.clear_screen ++ cc.cursor_home);
-            try self.print_stack();
+            try self.printStack();
             try self.writer.print(
                 "{s}{s}{s}",
                 .{ cc.red_on, self.err_buf, cc.color_reset },
@@ -253,7 +212,7 @@ const TUI = struct {
             try self.writer.writeAll(cc.cursor_home);
 
             @memset(&self.err_buf, 0);
-            self.handle_input() catch |err| {
+            self.handleInput() catch |err| {
                 switch (err) {
                     error.quit => return,
                     else => {
@@ -264,62 +223,43 @@ const TUI = struct {
         }
     }
 
-    fn handle_input(self: *@This()) !void {
-        var rc: usize = 0;
+    fn handleInput(self: *@This()) !void {
         return switch (try self.reader.readByte()) {
             'q' => error.quit,
             's' => try self.stack.swap(),
             'd' => try self.stack.drop(),
-            'p' => {
-                @memset(&self.input_buf, 0);
-                try self.writer.print(
-                    "{s}> ",
-                    .{cc.clear_screen ++ cc.show_cursor},
-                );
-                try cc.setCursorPos(self.writer, 2, 1);
-                try self.print_stack();
-                try cc.setCursorPos(self.writer, 1, 3);
-                self.terms.tui.lflag.ECHO = true;
-                self.terms.tui.lflag.ICANON = true;
-                rc = posix.system.tcsetattr(
-                    io.getStdIn().handle,
-                    .NOW,
-                    &self.terms.tui,
-                );
-                defer {
-                    self.terms.tui.lflag.ECHO = false;
-                    self.terms.tui.lflag.ICANON = false;
-                    _ = posix.system.tcsetattr(
-                        io.getStdIn().handle,
-                        .NOW,
-                        &self.terms.tui,
-                    );
-                    self.writer.print(
-                        "{s}",
-                        .{cc.hide_cursor},
-                    ) catch unreachable;
-
-                    cc.setCursorPos(
-                        self.writer,
-                        self.stack.len + 1,
-                        1,
-                    ) catch unreachable;
-                }
-                if (rc != 0) return error.TcsetattrFailed;
-                const input = try self.reader.readUntilDelimiter(
-                    &self.input_buf,
-                    '\n',
-                );
-                const trimmed = mem.trim(u8, input, " \t\r\n");
-                if (trimmed.len > 0) {
-                    try self.stack.push(trimmed);
-                }
-            },
+            'p' => try self.stack.push(try self.readInput()),
             else => {},
         };
     }
 
-    fn print_stack(self: *@This()) !void {
+    fn readInput(self: *@This()) ![]const u8 {
+        @memset(&self.input_buf, 0);
+        try self.writer.print("{s}> ", .{cc.clear_screen ++ cc.show_cursor});
+        try cc.setCursorPos(self.writer, 2, 1);
+        try self.printStack();
+        try cc.setCursorPos(self.writer, 1, 3);
+
+        var term = self.terms.tui;
+        term.lflag.ECHO = true;
+        term.lflag.ICANON = true;
+        if (posix.system.tcsetattr(io.getStdIn().handle, .NOW, &term) != 0) {
+            return error.TcsetattrFailed;
+        }
+        defer {
+            term.lflag.ECHO = false;
+            term.lflag.ICANON = false;
+            if (posix.system.tcsetattr(io.getStdIn().handle, .NOW, &term) != 0) {
+                debug.print("Warning: Failed to restore terminal settings\n", .{});
+            }
+            self.writer.print("{s}", .{cc.hide_cursor}) catch {};
+        }
+
+        const input = try self.reader.readUntilDelimiter(&self.input_buf, '\n');
+        return mem.trim(u8, input, " \t\r\n");
+    }
+
+    fn printStack(self: *@This()) !void {
         for (0..self.stack.len) |i| {
             const item = self.stack.items[self.stack.len - 1 - i];
             if (isEmptyItem(item)) break;
