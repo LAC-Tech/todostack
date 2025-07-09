@@ -136,80 +136,39 @@ const buf_size = struct {
 };
 
 const App = struct {
-    reader: io.Reader(fs.File, posix.ReadError, fs.File.read),
-    writer: io.Writer(fs.File, posix.WriteError, fs.File.write),
     stack: *Stack,
-    terms: struct {
-        original: posix.termios,
-        tui: posix.termios,
-    },
     input_buf: [buf_size.input]u8,
     err_buf: [buf_size.err]u8,
-    ws: posix.winsize,
+    tui: TUI,
 
     fn init(stack: *Stack) !@This() {
-        const reader = io.getStdIn().reader();
-        const writer = io.getStdOut().writer();
-        var ws: posix.winsize = undefined;
-        const rc = posix.system.ioctl(1, posix.T.IOCGWINSZ, @intFromPtr(&ws));
-        debug.assert(rc == 0);
+        var tui = try TUI.init();
+        try tui.rawOn();
+        try tui.clear();
+        try tui.hideCursor();
+        try tui.refresh();
 
-        var term: posix.termios = undefined;
-        if (posix.system.tcgetattr(io.getStdIn().handle, &term) != 0) {
-            return error.TcgetattrFailed;
-        }
-        const original = term;
-        try disableInputMode(&term);
-
-        try writer.writeAll(cc.clear_screen ++ cc.hide_cursor);
         return @This(){
-            .reader = reader,
-            .writer = writer,
             .stack = stack,
-            .terms = .{ .original = original, .tui = term },
             .input_buf = [_]u8{0} ** buf_size.input,
             .err_buf = [_]u8{0} ** buf_size.err,
-            .ws = ws,
+            .tui = tui,
         };
     }
 
     fn deinit(self: *@This()) void {
-        const rc = posix.system.tcsetattr(
-            io.getStdIn().handle,
-            .NOW,
-            &self.terms.original,
-        );
-        debug.assert(rc == 0);
-        _ = self.writer.writeAll(
-            cc.clear_screen ++ cc.cursor_home,
-        ) catch unreachable;
-    }
-
-    fn disableInputMode(term: *posix.termios) !void {
-        term.lflag.ICANON = false;
-        term.lflag.ECHO = false;
-        if (posix.system.tcsetattr(io.getStdIn().handle, .NOW, term) != 0) {
-            return error.TcsetattrFailed;
-        }
-    }
-
-    fn enableInputMode(term: *posix.termios) !void {
-        term.lflag.ICANON = true;
-        term.lflag.ECHO = true;
-        if (posix.system.tcsetattr(io.getStdIn().handle, .NOW, term) != 0) {
-            return error.TcsetattrFailed;
-        }
+        self.tui.clear();
+        self.tui.deinit();
     }
 
     fn mainLoop(self: *@This()) !void {
         while (true) {
-            try self.writer.writeAll(cc.clear_screen ++ cc.cursor_home);
+            try self.tui.clear();
+            try self.tui.cursorHome();
             try self.printStack();
-            try self.writer.print(
-                "{s}{s}{s}",
-                .{ cc.red_on, self.err_buf, cc.color_reset },
-            );
-            try self.writer.writeAll(cc.cursor_home);
+            try self.tui.print_red("{s}", .{self.err_buf});
+            try self.tui.cursorHome();
+            try self.tui.refresh();
 
             @memset(&self.err_buf, 0);
             self.handleInput() catch |err| {
@@ -224,7 +183,7 @@ const App = struct {
     }
 
     fn handleInput(self: *@This()) !void {
-        return switch (try self.reader.readByte()) {
+        return switch (try self.tui.readByte()) {
             'q' => error.quit,
             's' => try self.stack.swap(),
             'd' => try self.stack.drop(),
@@ -235,48 +194,162 @@ const App = struct {
 
     fn readLine(self: *@This()) ![]const u8 {
         @memset(&self.input_buf, 0);
-        try self.writer.print("{s}> ", .{cc.clear_screen ++ cc.show_cursor});
-        try cc.setCursorPos(self.writer, 2, 1);
-        try self.printStack();
-        try cc.setCursorPos(self.writer, 1, 3);
 
-        var term = self.terms.tui;
-        try enableInputMode(&term);
+        try self.tui.clear();
+        try self.tui.showCursor();
+        try self.tui.setCursorPos(.{ .row = 2, .col = 1 });
+        try self.printStack();
+        try self.tui.setCursorPos(.{ .row = 1, .col = 3 });
+        try self.tui.print("> ", .{});
+        try self.tui.rawOff();
+        try self.tui.refresh();
+
         defer {
-            disableInputMode(&term) catch unreachable;
-            self.writer.print("{s}", .{cc.hide_cursor}) catch {};
+            self.tui.rawOn() catch unreachable;
+            self.tui.hideCursor() catch unreachable;
+            self.tui.refresh() catch unreachable;
         }
 
-        const input = try self.reader.readUntilDelimiter(&self.input_buf, '\n');
-        return mem.trim(u8, input, " \t\r\n");
+        return self.tui.readString(&self.input_buf);
     }
 
     fn printStack(self: *@This()) !void {
         for (0..self.stack.len) |i| {
             const item = self.stack.items[self.stack.len - 1 - i];
             if (i == 0) {
-                try self.writer.print(
-                    "{s}{s}{s}\n",
-                    .{ cc.bold_on, item, cc.bold_off },
-                );
+                try self.tui.print_bold("{s}\n", .{item});
             } else {
-                try self.writer.print("{s}\n", .{item});
+                try self.tui.print("{s}\n", .{item});
             }
         }
     }
 };
 
-const cc = struct {
-    const clear_screen = "\x1B[2J";
-    const bold_on = "\x1B[1m";
-    const bold_off = "\x1B[0m";
-    const cursor_home = "\x1B[H";
-    const hide_cursor = "\x1B[?25l";
-    const show_cursor = "\x1B[?25h";
-    const red_on = "\x1B[31m";
-    const color_reset = "\x1B[0m";
+const TUI = struct {
+    const cc = struct {
+        const clear_screen = "\x1B[2J";
+        const bold_on = "\x1B[1m";
+        const bold_off = "\x1B[0m";
+        const cursor_home = "\x1B[H";
+        const hide_cursor = "\x1B[?25l";
+        const show_cursor = "\x1B[?25h";
+        const red_on = "\x1B[31m";
+        const color_reset = "\x1B[0m";
+    };
 
-    fn setCursorPos(writer: anytype, row: u16, col: u16) !void {
-        try writer.print("\x1B[{d};{d}H", .{ row, col });
+    const Pos = struct { row: u16, col: u16 };
+
+    reader: io.Reader(fs.File, posix.ReadError, fs.File.read),
+    writer: io.BufferedWriter(4096, io.Writer(
+        fs.File,
+        posix.WriteError,
+        fs.File.write,
+    )),
+    termios: struct {
+        original: posix.termios,
+        tui: posix.termios,
+    },
+    ws: posix.winsize,
+
+    fn init() !@This() {
+        var ws: posix.winsize = undefined;
+        const rc = posix.system.ioctl(1, posix.T.IOCGWINSZ, @intFromPtr(&ws));
+        debug.assert(rc == 0);
+
+        var term: posix.termios = undefined;
+        if (posix.system.tcgetattr(io.getStdIn().handle, &term) != 0) {
+            return error.TcgetattrFailed;
+        }
+
+        return .{
+            .reader = io.getStdIn().reader(),
+            .writer = io.bufferedWriter(io.getStdOut().writer()),
+            .termios = .{ .original = term, .tui = term },
+            .ws = ws,
+        };
+    }
+
+    fn deinit(self: *@This()) void {
+        const rc = posix.system.tcsetattr(
+            io.getStdIn().handle,
+            .NOW,
+            &self.termios.original,
+        );
+        debug.assert(rc == 0);
+        _ = self.writer.write(
+            cc.clear_screen ++ cc.cursor_home,
+        ) catch unreachable;
+    }
+
+    fn print(self: *@This(), comptime format: []const u8, args: anytype) !void {
+        var w = self.writer.writer();
+        try w.print(format, args);
+    }
+
+    fn print_bold(self: *@This(), comptime format: []const u8, args: anytype) !void {
+        var w = self.writer.writer();
+        try w.print("{s}", .{cc.bold_on});
+        try w.print(format, args);
+        try w.print("{s}", .{cc.bold_off});
+    }
+
+    fn print_red(self: *@This(), comptime format: []const u8, args: anytype) !void {
+        var w = self.writer.writer();
+        try w.print("{s}", .{cc.red_on});
+        try w.print(format, args);
+        try w.print("{s}", .{cc.color_reset});
+    }
+
+    fn refresh(self: *@This()) !void {
+        try self.writer.flush();
+    }
+
+    fn rawOn(self: *@This()) !void {
+        var term = self.termios.tui;
+        term.lflag.ICANON = false;
+        term.lflag.ECHO = false;
+        if (posix.system.tcsetattr(io.getStdIn().handle, .NOW, &term) != 0) {
+            return error.TcsetattrFailed;
+        }
+    }
+
+    fn rawOff(self: *@This()) !void {
+        var term = self.termios.tui;
+        term.lflag.ICANON = true;
+        term.lflag.ECHO = true;
+
+        if (posix.system.tcsetattr(io.getStdIn().handle, .NOW, &term) != 0) {
+            return error.TcsetattrFailed;
+        }
+    }
+
+    fn clear(self: *@This()) !void {
+        _ = try self.writer.write(cc.clear_screen);
+    }
+
+    fn hideCursor(self: *@This()) !void {
+        _ = try self.writer.write(cc.hide_cursor);
+    }
+
+    fn showCursor(self: *@This()) !void {
+        _ = try self.writer.write(cc.hide_cursor);
+    }
+
+    fn cursorHome(self: *@This()) !void {
+        _ = try self.writer.write(cc.cursor_home);
+    }
+
+    fn setCursorPos(self: *@This(), pos: Pos) !void {
+        var w = self.writer.writer();
+        try w.print("\x1B[{d};{d}H", .{ pos.row, pos.col });
+    }
+
+    fn readByte(self: @This()) !u8 {
+        return self.reader.readByte();
+    }
+
+    fn readString(self: @This(), buf: []u8) ![]const u8 {
+        const input = try self.reader.readUntilDelimiter(buf, '\n');
+        return mem.trim(u8, input, " \t\r\n");
     }
 };
