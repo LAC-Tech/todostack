@@ -16,13 +16,6 @@ pub fn main() !void {
     var filename_buf = [_]u8{0} ** buf_size.filename;
     const args = try parseArgs();
     const fd = try openFile(args.filename, args.create, &filename_buf);
-    defer {
-        posix.close(fd);
-        posix.fsync(fd) catch |err| debug.print(
-            "Warning: fsync failed: {}\n",
-            .{err},
-        );
-    }
 
     const bytes = try posix.mmap(
         null,
@@ -36,8 +29,16 @@ pub fn main() !void {
 
     var stack = Stack.init(bytes);
     var tui = try TUI.init(&stack);
-    defer tui.deinit();
     try tui.mainLoop();
+
+    defer {
+        posix.close(fd);
+        posix.fsync(fd) catch |err| debug.print(
+            "Warning: fsync failed: {}\n",
+            .{err},
+        );
+        defer tui.deinit();
+    }
 }
 
 fn parseArgs() !struct { filename: []const u8, create: bool } {
@@ -161,11 +162,7 @@ const TUI = struct {
             return error.TcgetattrFailed;
         }
         const original = term;
-        term.lflag.ICANON = false;
-        term.lflag.ECHO = false;
-        if (posix.system.tcsetattr(io.getStdIn().handle, .NOW, &term) != 0) {
-            return error.TcsetattrFailed;
-        }
+        try disableInputMode(&term);
 
         var tui = TUI{
             .reader = reader,
@@ -190,6 +187,22 @@ const TUI = struct {
         _ = self.writer.writeAll(
             cc.clear_screen ++ cc.cursor_home,
         ) catch unreachable;
+    }
+
+    fn disableInputMode(term: *posix.termios) !void {
+        term.lflag.ICANON = false;
+        term.lflag.ECHO = false;
+        if (posix.system.tcsetattr(io.getStdIn().handle, .NOW, term) != 0) {
+            return error.TcsetattrFailed;
+        }
+    }
+
+    fn enableInputMode(term: *posix.termios) !void {
+        term.lflag.ICANON = true;
+        term.lflag.ECHO = true;
+        if (posix.system.tcsetattr(io.getStdIn().handle, .NOW, term) != 0) {
+            return error.TcsetattrFailed;
+        }
     }
 
     fn mainLoop(self: *@This()) !void {
@@ -219,12 +232,12 @@ const TUI = struct {
             'q' => error.quit,
             's' => try self.stack.swap(),
             'd' => try self.stack.drop(),
-            'p' => try self.stack.push(try self.readInput()),
+            'p' => try self.stack.push(try self.readLine()),
             else => {},
         };
     }
 
-    fn readInput(self: *@This()) ![]const u8 {
+    fn readLine(self: *@This()) ![]const u8 {
         @memset(&self.input_buf, 0);
         try self.writer.print("{s}> ", .{cc.clear_screen ++ cc.show_cursor});
         try cc.setCursorPos(self.writer, 2, 1);
@@ -232,24 +245,16 @@ const TUI = struct {
         try cc.setCursorPos(self.writer, 1, 3);
 
         var term = self.terms.tui;
-        term.lflag.ECHO = true;
-        term.lflag.ICANON = true;
-        if (posix.system.tcsetattr(io.getStdIn().handle, .NOW, &term) != 0) {
-            return error.TcsetattrFailed;
-        }
+        try enableInputMode(&term);
         defer {
-            term.lflag.ECHO = false;
-            term.lflag.ICANON = false;
-            const rc = posix.system.tcsetattr(
-                io.getStdIn().handle,
-                .NOW,
-                &term,
-            );
-            debug.assert(rc == 0);
+            disableInputMode(&term) catch unreachable;
             self.writer.print("{s}", .{cc.hide_cursor}) catch {};
         }
 
-        const input = try self.reader.readUntilDelimiter(&self.input_buf, '\n');
+        const input = blk: {
+            const result = self.reader.readUntilDelimiter(&self.input_buf, '\n');
+            break :blk try result;
+        };
         return mem.trim(u8, input, " \t\r\n");
     }
 
