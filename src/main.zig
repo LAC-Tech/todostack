@@ -42,16 +42,10 @@ pub fn main() !void {
 
 fn parseArgs() !struct { filename: []const u8, create: bool } {
     var args = process.args();
-    _ = args.next() orelse return error.NoArgs;
-    const arg1 = args.next() orelse {
-        return error.MissingFilename;
-    };
+    _ = args.skip();
+    const arg1 = args.next() orelse return error.MissingFilename;
     if (mem.eql(u8, arg1, "-n")) {
-        const name = args.next() orelse {
-            debug.print("Error: -n requires a name\n", .{});
-            printUsage();
-            return error.MissingName;
-        };
+        const name = args.next() orelse return error.MissingName;
         return .{ .filename = name, .create = true };
     }
     return .{ .filename = arg1, .create = false };
