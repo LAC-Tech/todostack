@@ -157,7 +157,8 @@ const App = struct {
     }
 
     fn deinit(self: *@This()) void {
-        self.tui.clear();
+        self.tui.clear() catch unreachable;
+        self.tui.refresh() catch unreachable;
         self.tui.deinit();
     }
 
@@ -196,11 +197,11 @@ const App = struct {
         @memset(&self.input_buf, 0);
 
         try self.tui.clear();
-        try self.tui.showCursor();
         try self.tui.setCursorPos(.{ .row = 2, .col = 1 });
         try self.printStack();
-        try self.tui.setCursorPos(.{ .row = 1, .col = 3 });
+        try self.tui.cursorHome();
         try self.tui.print("> ", .{});
+        try self.tui.showCursor();
         try self.tui.rawOff();
         try self.tui.refresh();
 
@@ -332,7 +333,7 @@ const TUI = struct {
     }
 
     fn showCursor(self: *@This()) !void {
-        _ = try self.writer.write(cc.hide_cursor);
+        _ = try self.writer.write(cc.show_cursor);
     }
 
     fn cursorHome(self: *@This()) !void {
