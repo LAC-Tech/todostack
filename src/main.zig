@@ -131,7 +131,7 @@ const Stack = struct {
 
 const buf_size = struct {
     const input = max_item_size + 1; // to allow room for newline;
-    const err = 128;
+    const err = 1024;
     const filename = 512; // Daniel's Constant
 };
 
@@ -248,10 +248,7 @@ const TUI = struct {
             self.writer.print("{s}", .{cc.hide_cursor}) catch {};
         }
 
-        const input = blk: {
-            const result = self.reader.readUntilDelimiter(&self.input_buf, '\n');
-            break :blk try result;
-        };
+        const input = try self.reader.readUntilDelimiter(&self.input_buf, '\n');
         return mem.trim(u8, input, " \t\r\n");
     }
 
