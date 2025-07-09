@@ -14,7 +14,10 @@ const file_ext = "tds.bin";
 
 pub fn main() !void {
     var filename_buf = [_]u8{0} ** buf_size.filename;
-    const args = try parseArgs();
+    const args = parseArgs() catch {
+        printUsage();
+        return;
+    };
     const fd = try openFile(args.filename, args.create, &filename_buf);
 
     const bytes = try posix.mmap(
@@ -41,7 +44,6 @@ fn parseArgs() !struct { filename: []const u8, create: bool } {
     var args = process.args();
     _ = args.next() orelse return error.NoArgs;
     const arg1 = args.next() orelse {
-        printUsage();
         return error.MissingFilename;
     };
     if (mem.eql(u8, arg1, "-n")) {
