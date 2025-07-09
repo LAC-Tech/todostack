@@ -57,7 +57,9 @@ pub fn main() !void {
     debug.assert(bytes.len == file_size);
 
     var stack = Stack.init(bytes);
-    try repl(&stack);
+    var tui = try TUI.init(&stack);
+    try tui.main_loop();
+    defer tui.deinit();
 }
 
 fn printUsage() void {
@@ -69,7 +71,11 @@ fn printUsage() void {
 const file = struct {
     fn create(name: []const u8) !posix.fd_t {
         var filename_buf: [256]u8 = undefined;
-        const filename = try fmt.bufPrint(&filename_buf, "{s}.{s}", .{ name, file_ext });
+        const filename = try fmt.bufPrint(
+            &filename_buf,
+            "{s}.{s}",
+            .{ name, file_ext },
+        );
 
         const fd = try posix.open(
             filename,
@@ -79,7 +85,6 @@ const file = struct {
 
         try posix.ftruncate(fd, file_size);
 
-        debug.print("Created new file: {s}\n", .{filename});
         return fd;
     }
 
@@ -157,62 +162,190 @@ const Stack = struct {
     }
 };
 
-fn repl(stack: *Stack) !void {
-    var buffer: [1024]u8 = undefined;
-    const stdin = io.getStdIn().reader();
-    const stdout = io.getStdIn().writer();
-
-    while (true) {
-        try stdout.print("> ", .{});
-        const input = try stdin.readUntilDelimiterOrEof(&buffer, '\n');
-        if (input == null) break;
-
-        const trimmed = mem.trim(u8, input.?, " \t\r\n");
-        if (mem.eql(u8, trimmed, "d")) {
-            stack.drop() catch |err| {
-                try stdout.print("{}\n", .{err});
-            };
-        } else if (mem.eql(u8, trimmed, "s")) {
-            stack.swap() catch |err| {
-                try stdout.print("{}\n", .{err});
-            };
-        } else if (mem.eql(u8, trimmed, "q")) {
-            return;
-        } else if (mem.eql(u8, trimmed, ".")) {
-            for (0..stack.len) |i| {
-                const item = stack.items[stack.len - 1 - i];
-                if (isEmptyItem(item)) break;
-                if (i == 0) {
-                    try stdout.print("\x1B[1m{s}\x1B[0m\n", .{item});
-                } else {
-                    try stdout.print("{s}\n", .{item});
-                }
-            }
-        } else if (isStringLiteral(trimmed)) {
-            // Extract content between quotes
-            const content = trimmed[1 .. trimmed.len - 1];
-            if (content.len == 0) {
-                try stdout.print("Empty string\n", .{});
-                continue;
-            }
-
-            stack.push(content) catch |err| {
-                try stdout.print("{}\n", .{err});
-            };
-        } else {
-            debug.print("Err: unknown command '{s}'\n", .{trimmed});
-        }
-    }
-}
-
-fn isStringLiteral(s: []const u8) bool {
-    if (2 > s.len) return false;
-    if (s[0] != '"') return false;
-    if (s[s.len - 1] != '"') return false;
-
-    return true;
-}
-
 fn isEmptyItem(item: [max_item_size]u8) bool {
     return mem.allEqual(u8, &item, 0);
 }
+
+fn init_terms(fd: posix.fd_t) !struct {
+    original: posix.termios,
+    tui: posix.termios,
+} {
+    var term: posix.termios = undefined;
+    var rc = posix.system.tcgetattr(fd, &term);
+    if (rc != 0) return error.TcgetattrFailed;
+    const original = term;
+    term.lflag.ICANON = false;
+    term.lflag.ECHO = false;
+    rc = posix.system.tcsetattr(fd, .NOW, &term);
+    if (rc != 0) return error.TcsetattrFailed;
+    return .{ .original = original, .tui = term };
+}
+
+const buf_size = struct {
+    const input = max_item_size + 1; // to allow room for newline;
+    const err = 128;
+};
+
+const TUI = struct {
+    reader: io.Reader(std.fs.File, std.posix.ReadError, std.fs.File.read),
+    writer: io.Writer(std.fs.File, std.posix.WriteError, std.fs.File.write),
+    stack: *Stack,
+    terms: struct {
+        original: posix.termios,
+        tui: posix.termios,
+    },
+    input_buf: [buf_size.input]u8,
+    err_buf: [buf_size.err]u8,
+    ws: posix.winsize,
+
+    fn init(stack: *Stack) !TUI {
+        const reader = io.getStdIn().reader();
+        const writer = io.getStdOut().writer();
+        var ws: posix.winsize = undefined;
+        const rc = posix.system.ioctl(1, posix.T.IOCGWINSZ, @intFromPtr(&ws));
+        debug.assert(rc == 0);
+        debug.print("rows = {}\n", .{ws.row});
+
+        var term: posix.termios = undefined;
+        if (posix.system.tcgetattr(io.getStdIn().handle, &term) != 0) {
+            return error.TcgetattrFailed;
+        }
+        const original = term;
+        term.lflag.ICANON = false;
+        term.lflag.ECHO = false;
+        if (posix.system.tcsetattr(io.getStdIn().handle, .NOW, &term) != 0) {
+            return error.TcsetattrFailed;
+        }
+
+        var tui = TUI{
+            .reader = reader,
+            .writer = writer,
+            .stack = stack,
+            .terms = .{ .original = original, .tui = term },
+            .input_buf = [_]u8{0} ** buf_size.input,
+            .err_buf = [_]u8{0} ** buf_size.err,
+            .ws = ws,
+        };
+        try tui.writer.writeAll(cc.clear_screen ++ cc.hide_cursor);
+        return tui;
+    }
+
+    fn deinit(self: *TUI) void {
+        const rc = posix.system.tcsetattr(
+            io.getStdIn().handle,
+            .NOW,
+            &self.terms.original,
+        );
+        debug.assert(rc == 0);
+        _ = self.writer.writeAll(
+            cc.clear_screen ++ cc.cursor_home,
+        ) catch unreachable;
+    }
+
+    fn main_loop(self: *@This()) !void {
+        while (true) {
+            try self.writer.writeAll(cc.clear_screen ++ cc.cursor_home);
+            try self.print_stack();
+            try self.writer.print(
+                "{s}{s}{s}",
+                .{ cc.red_on, self.err_buf, cc.color_reset },
+            );
+            try self.writer.writeAll(cc.cursor_home);
+
+            @memset(&self.err_buf, 0);
+            self.handle_input() catch |err| {
+                switch (err) {
+                    error.quit => return,
+                    else => {
+                        _ = try fmt.bufPrint(&self.err_buf, "{}", .{err});
+                    },
+                }
+            };
+        }
+    }
+
+    fn handle_input(self: *@This()) !void {
+        var rc: usize = 0;
+        return switch (try self.reader.readByte()) {
+            'q' => error.quit,
+            's' => try self.stack.swap(),
+            'd' => try self.stack.drop(),
+            'p' => {
+                @memset(&self.input_buf, 0);
+                try self.writer.print(
+                    "{s}> ",
+                    .{cc.clear_screen ++ cc.show_cursor},
+                );
+                try cc.setCursorPos(self.writer, 2, 1);
+                try self.print_stack();
+                try cc.setCursorPos(self.writer, 1, 3);
+                self.terms.tui.lflag.ECHO = true;
+                self.terms.tui.lflag.ICANON = true;
+                rc = posix.system.tcsetattr(
+                    io.getStdIn().handle,
+                    .NOW,
+                    &self.terms.tui,
+                );
+                defer {
+                    self.terms.tui.lflag.ECHO = false;
+                    self.terms.tui.lflag.ICANON = false;
+                    _ = posix.system.tcsetattr(
+                        io.getStdIn().handle,
+                        .NOW,
+                        &self.terms.tui,
+                    );
+                    self.writer.print(
+                        "{s}",
+                        .{cc.hide_cursor},
+                    ) catch unreachable;
+
+                    cc.setCursorPos(
+                        self.writer,
+                        self.stack.len + 1,
+                        1,
+                    ) catch unreachable;
+                }
+                if (rc != 0) return error.TcsetattrFailed;
+                const input = try self.reader.readUntilDelimiter(
+                    &self.input_buf,
+                    '\n',
+                );
+                const trimmed = mem.trim(u8, input, " \t\r\n");
+                if (trimmed.len > 0) {
+                    try self.stack.push(trimmed);
+                }
+            },
+            else => {},
+        };
+    }
+
+    fn print_stack(self: *@This()) !void {
+        for (0..self.stack.len) |i| {
+            const item = self.stack.items[self.stack.len - 1 - i];
+            if (isEmptyItem(item)) break;
+            if (i == 0) {
+                try self.writer.print(
+                    "{s}{s}{s}\n",
+                    .{ cc.bold_on, item, cc.bold_off },
+                );
+            } else {
+                try self.writer.print("{s}\n", .{item});
+            }
+        }
+    }
+};
+
+const cc = struct {
+    const clear_screen = "\x1B[2J";
+    const bold_on = "\x1B[1m";
+    const bold_off = "\x1B[0m";
+    const cursor_home = "\x1B[H";
+    const hide_cursor = "\x1B[?25l";
+    const show_cursor = "\x1B[?25h";
+    const red_on = "\x1B[31m";
+    const color_reset = "\x1B[0m";
+
+    fn setCursorPos(writer: anytype, row: u16, col: u16) !void {
+        try writer.print("\x1B[{d};{d}H", .{ row, col });
+    }
+};
