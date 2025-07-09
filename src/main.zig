@@ -28,12 +28,12 @@ pub fn main() !void {
     debug.assert(bytes.len == file_size);
 
     var stack = Stack.init(bytes);
-    var tui = try TUI.init(&stack);
-    try tui.mainLoop();
+    var app = try App.init(&stack);
+    try app.mainLoop();
 
     defer {
         posix.close(fd);
-        defer tui.deinit();
+        defer app.deinit();
     }
 }
 
@@ -135,7 +135,7 @@ const buf_size = struct {
     const filename = 512; // Daniel's Constant
 };
 
-const TUI = struct {
+const App = struct {
     reader: io.Reader(fs.File, posix.ReadError, fs.File.read),
     writer: io.Writer(fs.File, posix.WriteError, fs.File.write),
     stack: *Stack,
@@ -147,7 +147,7 @@ const TUI = struct {
     err_buf: [buf_size.err]u8,
     ws: posix.winsize,
 
-    fn init(stack: *Stack) !TUI {
+    fn init(stack: *Stack) !@This() {
         const reader = io.getStdIn().reader();
         const writer = io.getStdOut().writer();
         var ws: posix.winsize = undefined;
@@ -161,7 +161,8 @@ const TUI = struct {
         const original = term;
         try disableInputMode(&term);
 
-        var tui = TUI{
+        try writer.writeAll(cc.clear_screen ++ cc.hide_cursor);
+        return @This(){
             .reader = reader,
             .writer = writer,
             .stack = stack,
@@ -170,11 +171,9 @@ const TUI = struct {
             .err_buf = [_]u8{0} ** buf_size.err,
             .ws = ws,
         };
-        try tui.writer.writeAll(cc.clear_screen ++ cc.hide_cursor);
-        return tui;
     }
 
-    fn deinit(self: *TUI) void {
+    fn deinit(self: *@This()) void {
         const rc = posix.system.tcsetattr(
             io.getStdIn().handle,
             .NOW,
