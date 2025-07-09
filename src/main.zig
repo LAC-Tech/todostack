@@ -13,13 +13,16 @@ const file_size = max_stack_size * max_item_size;
 const file_ext = "tds.bin";
 
 pub fn main() !void {
+    var filename_buf = [_]u8{0} ** buf_size.filename;
     const args = try parseArgs();
-    const fd = try openFile(args.filename, args.create);
-    defer posix.close(fd);
-    errdefer posix.fsync(fd) catch |err| debug.print(
-        "Warning: fsync failed: {}\n",
-        .{err},
-    );
+    const fd = try openFile(args.filename, args.create, &filename_buf);
+    defer {
+        posix.close(fd);
+        posix.fsync(fd) catch |err| debug.print(
+            "Warning: fsync failed: {}\n",
+            .{err},
+        );
+    }
 
     const bytes = try posix.mmap(
         null,
@@ -55,19 +58,12 @@ fn parseArgs() !struct { filename: []const u8, create: bool } {
     return .{ .filename = arg1, .create = false };
 }
 
-fn printUsage() void {
-    debug.print("Usage:\n", .{});
-    debug.print("\ttds <file.{s}>\t- Open existing file\n", .{file_ext});
-    debug.print("\ttds -n <name>\t- Create new file <name>.{s}\n", .{file_ext});
-}
-
-fn openFile(name: []const u8, create: bool) !posix.fd_t {
-    const filename = if (create) try fmt.allocPrintZ(
-        std.heap.page_allocator,
+fn openFile(name: []const u8, create: bool, buf: []u8) !posix.fd_t {
+    const filename = if (create) try fmt.bufPrint(
+        buf,
         "{s}.{s}",
         .{ name, file_ext },
     ) else name;
-    defer if (create) std.heap.page_allocator.free(filename);
 
     const fd = try posix.open(
         filename,
@@ -82,16 +78,22 @@ fn openFile(name: []const u8, create: bool) !posix.fd_t {
     return fd;
 }
 
+fn printUsage() void {
+    debug.print("Usage:\n", .{});
+    debug.print("\ttds <file.{s}>\t- Open existing file\n", .{file_ext});
+    debug.print("\ttds -n <name>\t- Create new file <name>.{s}\n", .{file_ext});
+}
+
 const Stack = struct {
     items: *[max_stack_size][max_item_size]u8,
     temp_a: [max_item_size]u8,
     len: u8,
 
     fn init(bytes: []u8) Stack {
-        const data = @as(*[max_stack_size][max_item_size]u8, @ptrCast(bytes.ptr));
+        const data: *[max_stack_size][max_item_size]u8 = @ptrCast(bytes.ptr);
         var len: u8 = 0;
         for (data, 0..) |item, i| {
-            if (isEmptyItem(item)) break;
+            if (mem.allEqual(u8, &item, 0)) break;
             len = @intCast(i + 1);
         }
         return .{
@@ -129,13 +131,10 @@ const Stack = struct {
     }
 };
 
-fn isEmptyItem(item: [max_item_size]u8) bool {
-    return mem.allEqual(u8, &item, 0);
-}
-
 const buf_size = struct {
     const input = max_item_size + 1; // to allow room for newline;
     const err = 128;
+    const filename = 512; // Daniel's Constant
 };
 
 const TUI = struct {
@@ -241,9 +240,12 @@ const TUI = struct {
         defer {
             term.lflag.ECHO = false;
             term.lflag.ICANON = false;
-            if (posix.system.tcsetattr(io.getStdIn().handle, .NOW, &term) != 0) {
-                debug.print("Warning: Failed to restore terminal settings\n", .{});
-            }
+            const rc = posix.system.tcsetattr(
+                io.getStdIn().handle,
+                .NOW,
+                &term,
+            );
+            debug.assert(rc == 0);
             self.writer.print("{s}", .{cc.hide_cursor}) catch {};
         }
 
@@ -254,7 +256,6 @@ const TUI = struct {
     fn printStack(self: *@This()) !void {
         for (0..self.stack.len) |i| {
             const item = self.stack.items[self.stack.len - 1 - i];
-            if (isEmptyItem(item)) break;
             if (i == 0) {
                 try self.writer.print(
                     "{s}{s}{s}\n",
