@@ -84,7 +84,8 @@ fn printUsage() void {
 
 const Stack = struct {
     items: *[max_stack_size][max_item_size]u8,
-    temp_a: [max_item_size]u8,
+    temp_a: [max_item_size]u8 = .{0} ** max_item_size,
+    temp_b: [max_item_size]u8 = .{0} ** max_item_size,
     len: u8,
 
     fn init(bytes: []u8) Stack {
@@ -94,11 +95,7 @@ const Stack = struct {
             if (mem.allEqual(u8, &item, 0)) break;
             len = @intCast(i + 1);
         }
-        return .{
-            .items = data,
-            .temp_a = [_]u8{0} ** max_item_size,
-            .len = len,
-        };
+        return .{ .items = data, .len = len };
     }
 
     fn push(self: *@This(), item: []const u8) !void {
@@ -124,6 +121,16 @@ const Stack = struct {
         try self.sync();
     }
 
+    fn rot(self: *@This()) !void {
+        if (self.len < 3) return error.Underflow;
+        @memcpy(&self.temp_a, &self.items[self.len - 1]);
+        @memcpy(&self.temp_b, &self.items[self.len - 2]);
+        @memcpy(&self.items[self.len - 1], &self.items[self.len - 3]);
+        @memcpy(&self.items[self.len - 2], &self.temp_a);
+        @memcpy(&self.items[self.len - 3], &self.temp_b);
+        try self.sync();
+    }
+
     fn sync(self: *@This()) !void {
         try posix.msync(@ptrCast(@alignCast(self.items)), posix.MSF.SYNC);
     }
@@ -137,8 +144,8 @@ const buf_size = struct {
 
 const App = struct {
     stack: *Stack,
-    input_buf: [buf_size.input]u8,
-    err_buf: [buf_size.err]u8,
+    input_buf: [buf_size.input]u8 = .{0} ** buf_size.input,
+    err_buf: [buf_size.err]u8 = .{0} ** buf_size.err,
     tui: TUI,
 
     fn init(stack: *Stack) !@This() {
@@ -148,12 +155,7 @@ const App = struct {
         try tui.hideCursor();
         try tui.refresh();
 
-        return @This(){
-            .stack = stack,
-            .input_buf = [_]u8{0} ** buf_size.input,
-            .err_buf = [_]u8{0} ** buf_size.err,
-            .tui = tui,
-        };
+        return @This(){ .stack = stack, .tui = tui };
     }
 
     fn deinit(self: *@This()) void {
@@ -188,6 +190,7 @@ const App = struct {
             'q' => error.quit,
             's' => try self.stack.swap(),
             'd' => try self.stack.drop(),
+            'r' => try self.stack.rot(),
             'p' => try self.stack.push(try self.readLine()),
             else => {},
         };
@@ -246,10 +249,7 @@ const TUI = struct {
         posix.WriteError,
         fs.File.write,
     )),
-    termios: struct {
-        original: posix.termios,
-        tui: posix.termios,
-    },
+    termios: struct { original: posix.termios, tui: posix.termios },
     ws: posix.winsize,
 
     fn init() !@This() {
