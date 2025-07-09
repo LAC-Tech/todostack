@@ -350,7 +350,16 @@ const TUI = struct {
     }
 
     fn readString(self: @This(), buf: []u8) ![]const u8 {
-        const input = try self.reader.readUntilDelimiter(buf, '\n');
+        const input = self.reader.readUntilDelimiter(buf, '\n') catch |err| {
+            switch (err) {
+                error.StreamTooLong => {
+                    // Consume the rest of the line to avoid bad state
+                    try self.reader.skipUntilDelimiterOrEof('\n');
+                    return error.InputTooLong;
+                },
+                else => return err,
+            }
+        };
         return mem.trim(u8, input, " \t\r\n");
     }
 };
