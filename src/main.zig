@@ -33,10 +33,6 @@ pub fn main() !void {
 
     defer {
         posix.close(fd);
-        posix.fsync(fd) catch |err| debug.print(
-            "Warning: fsync failed: {}\n",
-            .{err},
-        );
         defer tui.deinit();
     }
 }
@@ -73,6 +69,7 @@ fn openFile(name: []const u8, create: bool, buf: []u8) !posix.fd_t {
     );
     if (create) {
         try posix.ftruncate(fd, file_size);
+        try posix.fsync(fd);
     } else if ((try posix.fstat(fd)).size != file_size) {
         return error.InvalidFileSize;
     }
