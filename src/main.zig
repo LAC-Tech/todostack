@@ -13,35 +13,13 @@ const file_size = max_stack_size * max_item_size;
 const file_ext = "tds.bin";
 
 pub fn main() !void {
-    var args = process.args();
-    _ = args.next() orelse return;
-
-    const filename = args.next() orelse {
-        printUsage();
-        return;
-    };
-
-    const fd = if (mem.eql(u8, filename, "-n")) blk: {
-        const name = args.next() orelse {
-            debug.print("Error: -n requires a name argument\n", .{});
-            printUsage();
-            return;
-        };
-        break :blk openFile(name, true) catch |err| {
-            debug.print("Error creating stack '{s}': {}\n", .{ name, err });
-            return;
-        };
-    } else openFile(filename, false) catch |err| {
-        debug.print("Error opening stack '{s}': {}\n", .{ filename, err });
-        return;
-    };
-
-    defer {
-        posix.fsync(fd) catch |err| {
-            debug.print("Warning: fsync failed: {}\n", .{err});
-        };
-        posix.close(fd);
-    }
+    const args = try parseArgs();
+    const fd = try openFile(args.filename, args.create);
+    defer posix.close(fd);
+    errdefer posix.fsync(fd) catch |err| debug.print(
+        "Warning: fsync failed: {}\n",
+        .{err},
+    );
 
     const bytes = try posix.mmap(
         null,
@@ -51,13 +29,30 @@ pub fn main() !void {
         fd,
         0,
     );
-
     debug.assert(bytes.len == file_size);
 
     var stack = Stack.init(bytes);
     var tui = try TUI.init(&stack);
     defer tui.deinit();
     try tui.mainLoop();
+}
+
+fn parseArgs() !struct { filename: []const u8, create: bool } {
+    var args = process.args();
+    _ = args.next() orelse return error.NoArgs;
+    const arg1 = args.next() orelse {
+        printUsage();
+        return error.MissingFilename;
+    };
+    if (mem.eql(u8, arg1, "-n")) {
+        const name = args.next() orelse {
+            debug.print("Error: -n requires a name\n", .{});
+            printUsage();
+            return error.MissingName;
+        };
+        return .{ .filename = name, .create = true };
+    }
+    return .{ .filename = arg1, .create = false };
 }
 
 fn printUsage() void {
@@ -67,25 +62,22 @@ fn printUsage() void {
 }
 
 fn openFile(name: []const u8, create: bool) !posix.fd_t {
-    const filename = if (create) try fmt.allocPrint(
+    const filename = if (create) try fmt.allocPrintZ(
         std.heap.page_allocator,
         "{s}.{s}",
         .{ name, file_ext },
     ) else name;
     defer if (create) std.heap.page_allocator.free(filename);
-    const flags: posix.O = if (create) .{
-        .ACCMODE = .RDWR,
-        .CREAT = true,
-        .EXCL = true,
-    } else .{
-        .ACCMODE = .RDWR,
-        .EXCL = true,
-    };
-    const fd = try posix.open(filename, flags, 0o666);
-    if (create) try posix.ftruncate(fd, file_size);
-    if (!create) {
-        const stat = try posix.fstat(fd);
-        if (stat.size != file_size) return error.InvalidFileSize;
+
+    const fd = try posix.open(
+        filename,
+        .{ .ACCMODE = .RDWR, .CREAT = create, .EXCL = true },
+        0o666,
+    );
+    if (create) {
+        try posix.ftruncate(fd, file_size);
+    } else if ((try posix.fstat(fd)).size != file_size) {
+        return error.InvalidFileSize;
     }
     return fd;
 }
