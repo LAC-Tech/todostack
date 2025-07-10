@@ -187,7 +187,10 @@ const App = struct {
             's' => try self.stack.swap(),
             'd' => try self.stack.drop(),
             'r' => try self.stack.rot(),
-            'p' => try self.stack.push(try self.readLine()),
+            'p' => {
+                const line = try self.readLine();
+                if (line.len > 0) try self.stack.push(line);
+            },
             else => {},
         };
     }
