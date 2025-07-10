@@ -163,12 +163,10 @@ const App = struct {
         while (true) {
             try self.tui.write(&.{ cc.clear, cc.cursor.home });
             try self.printStack();
-            try self.tui.print("{s}{s}{s}{s}", .{
-                cc.fg_red,
-                self.err_buf,
-                cc.reset_attrs,
-                cc.cursor.home,
-            });
+            try self.tui.print(
+                "{s}{s}{s}{s}",
+                .{ cc.fg_red, self.err_buf, cc.reset_attrs, cc.cursor.home },
+            );
             try self.tui.refresh();
 
             @memset(&self.err_buf, 0);
