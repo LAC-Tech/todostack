@@ -163,8 +163,12 @@ const App = struct {
         while (true) {
             try self.tui.write(&.{ cc.clear, cc.cursor.home });
             try self.printStack();
-            try self.tui.print_red("{s}", .{self.err_buf});
-            try self.tui.write(&.{cc.cursor.home});
+            try self.tui.print("{s}{s}{s}{s}", .{
+                cc.fg_red,
+                self.err_buf,
+                cc.reset_attrs,
+                cc.cursor.home,
+            });
             try self.tui.refresh();
 
             @memset(&self.err_buf, 0);
@@ -199,9 +203,7 @@ const App = struct {
         try self.tui.write(&.{cc.clear});
         try self.tui.setCursorPos(.{ .row = 2, .col = 1 });
         try self.printStack();
-        try self.tui.write(&.{cc.cursor.home});
-        try self.tui.print("> ", .{});
-        try self.tui.write(&.{cc.cursor.show});
+        try self.tui.write(&.{ cc.cursor.home, "> ", cc.cursor.show });
         try self.tui.rawMode(false);
         try self.tui.refresh();
 
@@ -218,7 +220,11 @@ const App = struct {
         for (0..self.stack.len) |i| {
             const item = self.stack.items[self.stack.len - 1 - i];
             if (i == 0) {
-                try self.tui.print_bold("{s}\n", .{item});
+                try self.tui.print("{s}{s}{s}\n", .{
+                    cc.bold_on,
+                    item,
+                    cc.reset_attrs,
+                });
             } else {
                 try self.tui.print("{s}\n", .{item});
             }
@@ -271,20 +277,6 @@ const TUI = struct {
     fn print(self: *@This(), comptime format: []const u8, args: anytype) !void {
         var w = self.writer.writer();
         try w.print(format, args);
-    }
-
-    fn print_bold(self: *@This(), comptime format: []const u8, args: anytype) !void {
-        var w = self.writer.writer();
-        try w.print("{s}", .{cc.bold_on});
-        try w.print(format, args);
-        try w.print("{s}", .{cc.reset_attrs});
-    }
-
-    fn print_red(self: *@This(), comptime format: []const u8, args: anytype) !void {
-        var w = self.writer.writer();
-        try w.print("{s}", .{cc.fg_red});
-        try w.print(format, args);
-        try w.print("{s}", .{cc.reset_attrs});
     }
 
     fn refresh(self: *@This()) !void {
