@@ -198,8 +198,10 @@ const App = struct {
     fn readLine(self: *@This()) ![]const u8 {
         @memset(&self.input_buf, 0);
 
-        try self.tui.write(&.{cc.clear});
-        try self.tui.setCursorPos(.{ .row = 2, .col = 1 });
+        try self.tui.write(&.{
+            cc.clear,
+            cc.cursor.setPos(.{ .row = 2, .col = 1 }),
+        });
         try self.printStack();
         try self.tui.write(&.{ cc.cursor.home, "> ", cc.cursor.show });
         try self.tui.rawMode(false);
@@ -303,7 +305,7 @@ const TUI = struct {
 
     fn setCursorPos(self: *@This(), pos: CursorPos) !void {
         const w = self.writer.writer();
-        try cc.cursor.setPos(w, pos);
+        try w.print(cc.cursor.set_pos_fmt_str, .{ pos.row, pos.col });
     }
 
     fn readByte(self: @This()) !u8 {
@@ -356,8 +358,10 @@ const cc = struct {
         const hide = "\x1B[?25l";
         const show = "\x1B[?25h";
 
-        fn setPos(writer: anytype, pos: CursorPos) !void {
-            try writer.print("\x1B[{d};{d}H", .{ pos.row, pos.col });
+        const set_pos_fmt_str = "\x1B[{d};{d}H";
+
+        fn setPos(comptime pos: CursorPos) []const u8 {
+            return fmt.comptimePrint(set_pos_fmt_str, .{ pos.row, pos.col });
         }
     };
 };
