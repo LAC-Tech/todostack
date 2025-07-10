@@ -146,27 +146,25 @@ const App = struct {
 
     fn init(stack: *Stack) !@This() {
         var tui = try TUI.init();
-        try tui.rawOn();
-        try tui.clear();
-        try tui.hideCursor();
+        try tui.rawMode(true);
+        try tui.write(&.{ cc.clear, cc.cursor.hide });
         try tui.refresh();
 
         return @This(){ .stack = stack, .tui = tui };
     }
 
     fn deinit(self: *@This()) void {
-        self.tui.clear() catch unreachable;
+        self.tui.write(&.{cc.clear}) catch unreachable;
         self.tui.refresh() catch unreachable;
         self.tui.deinit();
     }
 
     fn mainLoop(self: *@This()) !void {
         while (true) {
-            try self.tui.clear();
-            try self.tui.cursorHome();
+            try self.tui.write(&.{ cc.clear, cc.cursor.home });
             try self.printStack();
             try self.tui.print_red("{s}", .{self.err_buf});
-            try self.tui.cursorHome();
+            try self.tui.write(&.{cc.cursor.home});
             try self.tui.refresh();
 
             @memset(&self.err_buf, 0);
@@ -198,18 +196,18 @@ const App = struct {
     fn readLine(self: *@This()) ![]const u8 {
         @memset(&self.input_buf, 0);
 
-        try self.tui.clear();
+        try self.tui.write(&.{cc.clear});
         try self.tui.setCursorPos(.{ .row = 2, .col = 1 });
         try self.printStack();
-        try self.tui.cursorHome();
+        try self.tui.write(&.{cc.cursor.home});
         try self.tui.print("> ", .{});
-        try self.tui.showCursor();
-        try self.tui.rawOff();
+        try self.tui.write(&.{cc.cursor.show});
+        try self.tui.rawMode(false);
         try self.tui.refresh();
 
         defer {
-            self.tui.rawOn() catch unreachable;
-            self.tui.hideCursor() catch unreachable;
+            self.tui.rawMode(true) catch unreachable;
+            self.tui.write(&.{cc.cursor.hide}) catch unreachable;
             self.tui.refresh() catch unreachable;
         }
 
@@ -228,20 +226,9 @@ const App = struct {
     }
 };
 
+const CursorPos = struct { row: u16, col: u16 };
+
 const TUI = struct {
-    const cc = struct {
-        const clear_screen = "\x1B[2J";
-        const bold_on = "\x1B[1m";
-        const bold_off = "\x1B[0m";
-        const cursor_home = "\x1B[H";
-        const hide_cursor = "\x1B[?25l";
-        const show_cursor = "\x1B[?25h";
-        const red_on = "\x1B[31m";
-        const color_reset = "\x1B[0m";
-    };
-
-    const Pos = struct { row: u16, col: u16 };
-
     reader: io.Reader(fs.File, posix.ReadError, fs.File.read),
     writer: io.BufferedWriter(4096, io.Writer(
         fs.File,
@@ -277,7 +264,7 @@ const TUI = struct {
         );
         debug.assert(rc == 0);
         _ = self.writer.write(
-            cc.clear_screen ++ cc.cursor_home,
+            cc.clear ++ cc.cursor.home,
         ) catch unreachable;
     }
 
@@ -290,58 +277,43 @@ const TUI = struct {
         var w = self.writer.writer();
         try w.print("{s}", .{cc.bold_on});
         try w.print(format, args);
-        try w.print("{s}", .{cc.bold_off});
+        try w.print("{s}", .{cc.reset_attrs});
     }
 
     fn print_red(self: *@This(), comptime format: []const u8, args: anytype) !void {
         var w = self.writer.writer();
-        try w.print("{s}", .{cc.red_on});
+        try w.print("{s}", .{cc.fg_red});
         try w.print(format, args);
-        try w.print("{s}", .{cc.color_reset});
+        try w.print("{s}", .{cc.reset_attrs});
     }
 
     fn refresh(self: *@This()) !void {
         try self.writer.flush();
     }
 
-    fn rawOn(self: *@This()) !void {
+    fn rawMode(self: *@This(), enabled: bool) !void {
         var term = self.termios.tui;
-        term.lflag.ICANON = false;
-        term.lflag.ECHO = false;
+        term.lflag.ICANON = !enabled;
+        term.lflag.ECHO = !enabled;
         if (posix.system.tcsetattr(io.getStdIn().handle, .NOW, &term) != 0) {
             return error.TcsetattrFailed;
         }
     }
 
-    fn rawOff(self: *@This()) !void {
-        var term = self.termios.tui;
-        term.lflag.ICANON = true;
-        term.lflag.ECHO = true;
-
-        if (posix.system.tcsetattr(io.getStdIn().handle, .NOW, &term) != 0) {
-            return error.TcsetattrFailed;
-        }
+    fn write(self: *@This(), comptime codes: []const []const u8) !void {
+        const combined = comptime blk: {
+            var result: []const u8 = "";
+            for (codes) |code| {
+                result = result ++ code;
+            }
+            break :blk result;
+        };
+        _ = try self.writer.write(combined);
     }
 
-    fn clear(self: *@This()) !void {
-        _ = try self.writer.write(cc.clear_screen);
-    }
-
-    fn hideCursor(self: *@This()) !void {
-        _ = try self.writer.write(cc.hide_cursor);
-    }
-
-    fn showCursor(self: *@This()) !void {
-        _ = try self.writer.write(cc.show_cursor);
-    }
-
-    fn cursorHome(self: *@This()) !void {
-        _ = try self.writer.write(cc.cursor_home);
-    }
-
-    fn setCursorPos(self: *@This(), pos: Pos) !void {
-        var w = self.writer.writer();
-        try w.print("\x1B[{d};{d}H", .{ pos.row, pos.col });
+    fn setCursorPos(self: *@This(), pos: CursorPos) !void {
+        const w = self.writer.writer();
+        try cc.cursor.setPos(w, pos);
     }
 
     fn readByte(self: @This()) !u8 {
@@ -361,4 +333,40 @@ const TUI = struct {
         };
         return mem.trim(u8, input, " \t\r\n");
     }
+};
+
+/// ECMA-48 Control Codes
+const cc = struct {
+    const clear = "\x1B[2J";
+    const bold_on = "\x1B[1m";
+    const reset_attrs = "\x1B[0m";
+
+    // Foreground colors
+    const fg_black = "\x1B[30m";
+    const fg_red = "\x1B[31m";
+    const fg_green = "\x1B[32m";
+    const fg_yellow = "\x1B[33m";
+    const fg_blue = "\x1B[34m";
+    const fg_magenta = "\x1B[35m";
+    const fg_cyan = "\x1B[36m";
+    const fg_white = "\x1B[37m";
+
+    // Background colors
+    const bg_black = "\x1B[40m";
+    const bg_red = "\x1B[41m";
+    const bg_green = "\x1B[42m";
+    const bg_yellow = "\x1B[43m";
+    const bg_blue = "\x1B[44m";
+    const bg_magenta = "\x1B[45m";
+    const bg_cyan = "\x1B[46m";
+    const bg_white = "\x1B[47m";
+
+    const cursor = struct {
+        const home = "\x1B[H";
+        const hide = "\x1B[?25l";
+        const show = "\x1B[?25h";
+        fn setPos(writer: anytype, pos: CursorPos) !void {
+            try writer.print("\x1B[{d};{d}H", .{ pos.row, pos.col });
+        }
+    };
 };
