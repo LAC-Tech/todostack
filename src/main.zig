@@ -355,6 +355,7 @@ const cc = struct {
         const home = "\x1B[H";
         const hide = "\x1B[?25l";
         const show = "\x1B[?25h";
+
         fn setPos(writer: anytype, pos: CursorPos) !void {
             try writer.print("\x1B[{d};{d}H", .{ pos.row, pos.col });
         }
