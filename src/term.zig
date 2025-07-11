@@ -1,0 +1,142 @@
+const std = @import("std");
+
+const debug = std.debug;
+const fmt = std.fmt;
+const fs = std.fs;
+const io = std.io;
+const mem = std.mem;
+const posix = std.posix;
+
+const CursorPos = struct { row: u16, col: u16 };
+
+pub const Term = struct {
+    reader: io.Reader(fs.File, posix.ReadError, fs.File.read),
+    writer: io.BufferedWriter(4096, io.Writer(
+        fs.File,
+        posix.WriteError,
+        fs.File.write,
+    )),
+    termios: struct { original: posix.termios, tui: posix.termios },
+    ws: posix.winsize,
+
+    pub fn init() !@This() {
+        var ws: posix.winsize = undefined;
+        const rc = posix.system.ioctl(1, posix.T.IOCGWINSZ, @intFromPtr(&ws));
+        debug.assert(rc == 0);
+
+        var term: posix.termios = undefined;
+        if (posix.system.tcgetattr(io.getStdIn().handle, &term) != 0) {
+            return error.TcgetattrFailed;
+        }
+
+        return .{
+            .reader = io.getStdIn().reader(),
+            .writer = io.bufferedWriter(io.getStdOut().writer()),
+            .termios = .{ .original = term, .tui = term },
+            .ws = ws,
+        };
+    }
+
+    pub fn deinit(self: *@This()) void {
+        const rc = posix.system.tcsetattr(
+            io.getStdIn().handle,
+            .NOW,
+            &self.termios.original,
+        );
+        debug.assert(rc == 0);
+        _ = self.writer.write(
+            cc.clear ++ cc.cursor.home,
+        ) catch unreachable;
+    }
+
+    pub fn print(self: *@This(), comptime format: []const u8, args: anytype) !void {
+        var w = self.writer.writer();
+        try w.print(format, args);
+    }
+
+    pub fn refresh(self: *@This()) !void {
+        try self.writer.flush();
+    }
+
+    pub fn rawMode(self: *@This(), enabled: bool) !void {
+        var term = self.termios.tui;
+        term.lflag.ICANON = !enabled;
+        term.lflag.ECHO = !enabled;
+        if (posix.system.tcsetattr(io.getStdIn().handle, .NOW, &term) != 0) {
+            return error.TcsetattrFailed;
+        }
+    }
+
+    pub fn write(self: *@This(), comptime codes: []const []const u8) !void {
+        const combined = comptime blk: {
+            var result: []const u8 = "";
+            for (codes) |code| {
+                result = result ++ code;
+            }
+            break :blk result;
+        };
+        _ = try self.writer.write(combined);
+    }
+
+    pub fn setCursorPos(self: *@This(), pos: CursorPos) !void {
+        const w = self.writer.writer();
+        try w.print(cc.cursor.set_pos_fmt_str, .{ pos.row, pos.col });
+    }
+
+    pub fn readByte(self: @This()) !u8 {
+        return self.reader.readByte();
+    }
+
+    pub fn readString(self: @This(), buf: []u8) ![]const u8 {
+        const input = self.reader.readUntilDelimiter(buf, '\n') catch |err| {
+            switch (err) {
+                error.StreamTooLong => {
+                    // Consume the rest of the line to avoid bad state
+                    try self.reader.skipUntilDelimiterOrEof('\n');
+                    return error.InputTooLong;
+                },
+                else => return err,
+            }
+        };
+        return mem.trim(u8, input, " \t\r\n");
+    }
+};
+
+/// ECMA-48 Control Codes
+pub const cc = struct {
+    pub const clear = "\x1B[2J";
+    pub const bold_on = "\x1B[1m";
+    pub const reset_attrs = "\x1B[0m";
+
+    // Foreground colors
+    pub const fg_black = "\x1B[30m";
+    pub const fg_red = "\x1B[31m";
+    pub const fg_green = "\x1B[32m";
+    pub const fg_yellow = "\x1B[33m";
+    pub const fg_blue = "\x1B[34m";
+    pub const fg_magenta = "\x1B[35m";
+    pub const fg_cyan = "\x1B[36m";
+    pub const fg_white = "\x1B[37m";
+
+    // Background colors
+    pub const bg_black = "\x1B[40m";
+    pub const bg_red = "\x1B[41m";
+    pub const bg_green = "\x1B[42m";
+    pub const bg_yellow = "\x1B[43m";
+    pub const bg_blue = "\x1B[44m";
+    pub const bg_magenta = "\x1B[45m";
+    pub const bg_cyan = "\x1B[46m";
+    pub const bg_white = "\x1B[47m";
+
+    pub const cursor = struct {
+        pub const home = "\x1B[H";
+        pub const hide = "\x1B[?25l";
+        pub const show = "\x1B[?25h";
+
+        const set_pos_fmt_str = "\x1B[{d};{d}H";
+
+        pub fn setPos(comptime pos: CursorPos) []const u8 {
+            return fmt.comptimePrint(set_pos_fmt_str, .{ pos.row, pos.col });
+        }
+    };
+};
