@@ -161,6 +161,8 @@ pub const cc = struct {
 
         const set_pos_fmt_str = "\x1B[{d};{d}H";
 
+        /// Set cursor with a comptime known position
+        /// For runtime values, see Term.setCursorPos
         pub fn setPos(comptime pos: CursorPos) []const u8 {
             return fmt.comptimePrint(set_pos_fmt_str, .{ pos.row, pos.col });
         }
