@@ -142,32 +142,32 @@ const App = struct {
     stack: *Stack,
     input_buf: [buf_size.input]u8 = .{0} ** buf_size.input,
     err_buf: [buf_size.err]u8 = .{0} ** buf_size.err,
-    tui: TUI,
+    term: Term,
 
     fn init(stack: *Stack) !@This() {
-        var tui = try TUI.init();
+        var tui = try Term.init();
         try tui.rawMode(true);
         try tui.write(&.{ cc.clear, cc.cursor.hide });
         try tui.refresh();
 
-        return @This(){ .stack = stack, .tui = tui };
+        return @This(){ .stack = stack, .term = tui };
     }
 
     fn deinit(self: *@This()) void {
-        self.tui.write(&.{cc.clear}) catch unreachable;
-        self.tui.refresh() catch unreachable;
-        self.tui.deinit();
+        self.term.write(&.{cc.clear}) catch unreachable;
+        self.term.refresh() catch unreachable;
+        self.term.deinit();
     }
 
     fn mainLoop(self: *@This()) !void {
         while (true) {
-            try self.tui.write(&.{ cc.clear, cc.cursor.home });
+            try self.term.write(&.{ cc.clear, cc.cursor.home });
             try self.printStack();
-            try self.tui.print(
+            try self.term.print(
                 "{s}{s}{s}{s}",
                 .{ cc.fg_red, self.err_buf, cc.reset_attrs, cc.cursor.home },
             );
-            try self.tui.refresh();
+            try self.term.refresh();
 
             @memset(&self.err_buf, 0);
             self.handleInput() catch |err| {
@@ -182,7 +182,7 @@ const App = struct {
     }
 
     fn handleInput(self: *@This()) !void {
-        return switch (try self.tui.readByte()) {
+        return switch (try self.term.readByte()) {
             'q' => error.quit,
             's' => try self.stack.swap(),
             'd' => try self.stack.drop(),
@@ -198,35 +198,35 @@ const App = struct {
     fn readLine(self: *@This()) ![]const u8 {
         @memset(&self.input_buf, 0);
 
-        try self.tui.write(&.{
+        try self.term.write(&.{
             cc.clear,
             cc.cursor.setPos(.{ .row = 2, .col = 1 }),
         });
         try self.printStack();
-        try self.tui.write(&.{ cc.cursor.home, "> ", cc.cursor.show });
-        try self.tui.rawMode(false);
-        try self.tui.refresh();
+        try self.term.write(&.{ cc.cursor.home, "> ", cc.cursor.show });
+        try self.term.rawMode(false);
+        try self.term.refresh();
 
         defer {
-            self.tui.rawMode(true) catch unreachable;
-            self.tui.write(&.{cc.cursor.hide}) catch unreachable;
-            self.tui.refresh() catch unreachable;
+            self.term.rawMode(true) catch unreachable;
+            self.term.write(&.{cc.cursor.hide}) catch unreachable;
+            self.term.refresh() catch unreachable;
         }
 
-        return self.tui.readString(&self.input_buf);
+        return self.term.readString(&self.input_buf);
     }
 
     fn printStack(self: *@This()) !void {
         for (0..self.stack.len) |i| {
             const item = self.stack.items[self.stack.len - 1 - i];
             if (i == 0) {
-                try self.tui.print("{s}{s}{s}\n", .{
+                try self.term.print("{s}{s}{s}\n", .{
                     cc.bold_on,
                     item,
                     cc.reset_attrs,
                 });
             } else {
-                try self.tui.print("{s}\n", .{item});
+                try self.term.print("{s}\n", .{item});
             }
         }
     }
@@ -234,7 +234,7 @@ const App = struct {
 
 const CursorPos = struct { row: u16, col: u16 };
 
-const TUI = struct {
+const Term = struct {
     reader: io.Reader(fs.File, posix.ReadError, fs.File.read),
     writer: io.BufferedWriter(4096, io.Writer(
         fs.File,
