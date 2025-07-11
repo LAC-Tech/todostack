@@ -1,4 +1,5 @@
 const std = @import("std");
+const BoundedArray = std.BoundedArray;
 const debug = std.debug;
 const fmt = std.fmt;
 const fs = std.fs;
@@ -12,8 +13,8 @@ const cc = term.cc;
 const Term = term.Term;
 
 const max_stack_size = 64;
-const max_item_size = 64;
-const file_size = max_stack_size * max_item_size;
+const max_item_size = 128;
+const file_size = 4096;
 const file_ext = "tds.bin";
 
 pub fn main() !void {
@@ -34,7 +35,7 @@ pub fn main() !void {
     );
     debug.assert(bytes.len == file_size);
 
-    var stack = Stack.init(bytes);
+    var stack = try Stack.init(bytes);
     var app = try App.init(&stack);
     try app.mainLoop();
 
@@ -83,19 +84,32 @@ fn printUsage() void {
 }
 
 const Stack = struct {
-    items: *[max_stack_size][max_item_size]u8,
+    mmap_file: []u8,
+    // always contains the next offset
+    offsets: BoundedArray(u16, max_stack_size + 1),
     temp_a: [max_item_size]u8 = .{0} ** max_item_size,
     temp_b: [max_item_size]u8 = .{0} ** max_item_size,
-    len: u8,
 
-    fn init(bytes: []u8) Stack {
-        const data: *[max_stack_size][max_item_size]u8 = @ptrCast(bytes.ptr);
-        var len: u8 = 0;
-        for (data, 0..) |item, i| {
-            if (mem.allEqual(u8, &item, 0)) break;
-            len = @intCast(i + 1);
+    fn init(mmap_file: []u8) !Stack {
+        var offsets = try BoundedArray(u16, max_stack_size + 1).fromSlice(&.{0});
+
+        if (mmap_file[0] == '\n') return error.CorruptFile;
+
+        if (!mem.allEqual(u8, mmap_file, 0)) {
+            for (mmap_file, 0..) |byte, i| {
+                if (byte != '\n') continue;
+                const newline_idx: u16 = @intCast(i);
+                try offsets.append(newline_idx + 1);
+            }
         }
-        return .{ .items = data, .len = len };
+        return .{ .mmap_file = mmap_file, .offsets = offsets };
+    }
+
+    fn toString(self: Stack) []const u8 {
+        if (self.offsets.len == 0) return "";
+
+        const printable_len = self.offsets.constSlice()[self.offsets.len - 1];
+        return self.mmap_file[0..printable_len];
     }
 
     fn push(self: *Stack, item: []const u8) !void {
