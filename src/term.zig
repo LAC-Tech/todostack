@@ -1,3 +1,23 @@
+//Copyright © 2025 Lewis Andrew Campbell
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the “Software”), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+// IN THE SOFTWARE.
+
 const std = @import("std");
 
 const debug = std.debug;
@@ -37,6 +57,7 @@ pub const Term = struct {
         };
     }
 
+    /// Resets the terminal state to what it was before
     pub fn deinit(self: *@This()) void {
         const rc = posix.system.tcsetattr(
             io.getStdIn().handle,
@@ -49,6 +70,7 @@ pub const Term = struct {
         ) catch unreachable;
     }
 
+    /// For runtime known values
     pub fn print(self: *@This(), comptime format: []const u8, args: anytype) !void {
         var w = self.writer.writer();
         try w.print(format, args);
@@ -67,6 +89,7 @@ pub const Term = struct {
         }
     }
 
+    /// For comptime known values
     pub fn write(self: *@This(), comptime codes: []const []const u8) !void {
         const combined = comptime blk: {
             var result: []const u8 = "";
@@ -78,6 +101,8 @@ pub const Term = struct {
         _ = try self.writer.write(combined);
     }
 
+    /// For runtime known cursor positons
+    /// For comptime known, use cc.curosr.setPos
     pub fn setCursorPos(self: *@This(), pos: CursorPos) !void {
         const w = self.writer.writer();
         try w.print(cc.cursor.set_pos_fmt_str, .{ pos.row, pos.col });
@@ -103,6 +128,7 @@ pub const Term = struct {
 };
 
 /// ECMA-48 Control Codes
+/// These are intended to be passed into the 'write' function of Term
 pub const cc = struct {
     pub const clear = "\x1B[2J";
     pub const bold_on = "\x1B[1m";
