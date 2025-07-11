@@ -224,11 +224,10 @@ const App = struct {
         for (0..self.stack.len) |i| {
             const item = self.stack.items[self.stack.len - 1 - i];
             if (i == 0) {
-                try self.term.print("{s}{s}{s}\n", .{
-                    cc.bold_on,
-                    item,
-                    cc.reset_attrs,
-                });
+                try self.term.print(
+                    "{s}{s}{s}\n",
+                    .{ cc.bold_on, item, cc.reset_attrs },
+                );
             } else {
                 try self.term.print("{s}\n", .{item});
             }
