@@ -117,7 +117,6 @@ pub const Term = struct {
     }
 
     pub fn readString(self: Term, buf: []u8) ![]const u8 {
-        @memset(buf, 0);
         const len = try self.reader.read(buf);
         return buf[0..len];
     }
