@@ -13,10 +13,13 @@ const term = @import("./term.zig");
 const cc = term.cc;
 const Term = term.Term;
 
-const max_stack_size = 64;
-const max_item_size = 128;
+//const max_stack_size = 64;
+//const max_item_size = 128;
+
+const max_stack_size = 4;
+const max_item_size = 4;
 const max_file_size = 4096;
-const file_ext = "tds.bin";
+const file_ext = "tds.txt";
 
 pub fn main() !void {
     var filename_buf = [_]u8{0} ** buf_size.filename;
@@ -93,25 +96,24 @@ const Stack = struct {
         );
         debug.assert(bytes.len == max_file_size);
 
+        const stat = try posix.fstat(fd);
+        const file_len: usize = @intCast(stat.size);
+        const file_bytes = bytes[0..file_len];
+
         var offsets = try BoundedArray(u16, max_stack_size + 1).fromSlice(&.{0});
-
-        if (bytes[0] == '\n') return error.CorruptFile;
-
-        if (!mem.allEqual(u8, bytes, 0)) {
-            for (bytes, 0..) |byte, i| {
+        if (!mem.allEqual(u8, file_bytes, 0)) {
+            for (file_bytes, 0..) |byte, i| {
                 if (byte != '\n') continue;
                 const newline_idx: u16 = @intCast(i);
                 try offsets.append(newline_idx + 1);
             }
         }
 
-        const stat = try posix.fstat(fd);
-
         return .{
             .fd = fd,
             .mmap_bytes = bytes,
             .offsets = offsets,
-            .file_len = @bitCast(stat.size),
+            .file_len = file_len,
         };
     }
 
@@ -120,9 +122,11 @@ const Stack = struct {
     }
 
     fn push(self: *Stack, item: []const u8) !void {
-        if (self.offsets.len - 1 >= max_stack_size) return error.StackOverflow;
-        if (item.len >= max_item_size) return error.ItemTooLong;
-        if (item.len == 0 or item[item.len - 1] != '\n') return error.ItemMissingNewline;
+        if (self.len() >= max_stack_size) return error.StackOverflow;
+        // including newline
+        if (item.len > max_item_size + 1) return error.ItemTooLong;
+        if (item.len == 0) return;
+        if (item[item.len - 1] != '\n') return error.ItemMissingNewline;
 
         const new_size = self.file_len + item.len;
         if (new_size > max_file_size) return error.FileTooLarge;
@@ -130,7 +134,7 @@ const Stack = struct {
         const bytes_appended: u16 = @intCast(try posix.pwrite(self.fd, item, self.file_len));
         debug.assert(bytes_appended == item.len);
 
-        const offset = self.offsets.constSlice()[self.offsets.len - 1];
+        const offset = self.offsets.constSlice()[self.len()];
         try self.offsets.append(offset + bytes_appended);
         self.file_len += bytes_appended;
 
@@ -138,7 +142,7 @@ const Stack = struct {
     }
 
     fn drop(self: *Stack) !void {
-        if (self.offsets.len <= 1) return error.Underflow;
+        if (1 > self.len()) return error.Underflow;
 
         const prev_offset = self.offsets.constSlice()[self.offsets.len - 2];
         try posix.ftruncate(self.fd, prev_offset);
@@ -149,67 +153,78 @@ const Stack = struct {
     }
 
     fn swap(self: *Stack) !void {
-        if (self.offsets.len < 2) return error.Underflow;
+        if (2 > self.len()) return error.Underflow;
 
         const offsets = self.offsets.constSlice();
-        const last_idx = self.offsets.len - 1;
-        const offset_1 = offsets[last_idx - 1];
-        const offset_2 = offsets[last_idx];
-        const item_1_len = offset_2 - offset_1;
-        const item_2_len = @as(u16, @intCast(self.file_len)) - offset_2;
+        const last = self.len();
 
-        if (item_1_len > max_item_size or item_2_len > max_item_size) return error.ItemTooLong;
+        const a_start = offsets[last - 1];
+        const b_start = offsets[last - 2];
+        const end = offsets[last];
 
-        @memcpy(self.temp_a[0..item_1_len], self.mmap_bytes[offset_1..offset_2]);
-        @memcpy(self.temp_b[0..item_2_len], self.mmap_bytes[offset_2..self.file_len]);
+        const a_len = end - a_start;
+        const b_len = a_start - b_start;
 
-        const base = offset_1;
-        @memcpy(self.mmap_bytes[base .. base + item_2_len], self.temp_b[0..item_2_len]);
-        @memcpy(self.mmap_bytes[base + item_2_len .. base + item_2_len + item_1_len], self.temp_a[0..item_1_len]);
+        if (a_len > max_item_size or b_len > max_item_size) {
+            return error.ItemTooLong;
+        }
 
-        self.offsets.slice()[last_idx - 1] = offset_1 + item_2_len;
-        self.file_len = offset_1 + item_2_len + item_1_len;
+        @memcpy(self.temp_a[0..a_len], self.mmap_bytes[a_start..end]);
+        @memcpy(self.temp_b[0..b_len], self.mmap_bytes[b_start..a_start]);
+
+        const base = b_start;
+        @memcpy(self.mmap_bytes[base .. base + a_len], self.temp_a[0..a_len]);
+        @memcpy(self.mmap_bytes[base + a_len .. base + a_len + b_len], self.temp_b[0..b_len]);
+
+        self.offsets.slice()[last - 1] = base + a_len;
+        self.offsets.slice()[last] = base + a_len + b_len;
+        self.file_len = base + a_len + b_len;
 
         try posix.msync(self.mmap_bytes, posix.MSF.SYNC);
     }
 
     fn rot(self: *Stack) !void {
-        if (self.offsets.len < 3) return error.Underflow;
+        if (3 > self.len()) return error.Underflow;
 
         const offsets = self.offsets.constSlice();
-        const last_idx = self.offsets.len - 1;
-        const offset_1 = offsets[last_idx - 2];
-        const offset_2 = offsets[last_idx - 1];
-        const offset_3 = offsets[last_idx];
-        const item_1_len = offset_2 - offset_1;
-        const item_2_len = offset_3 - offset_2;
-        const item_3_len = @as(u16, @intCast(self.file_len)) - offset_3;
+        const last = self.len();
 
-        if (item_1_len > max_item_size or item_2_len > max_item_size or item_3_len > max_item_size) {
+        const a_start = offsets[last - 3];
+        const b_start = offsets[last - 2];
+        const c_start = offsets[last - 1];
+        const end = offsets[last];
+
+        const a_len = b_start - a_start;
+        const b_len = c_start - b_start;
+        const c_len = end - c_start;
+
+        if (a_len > max_item_size or b_len > max_item_size or c_len > max_item_size) {
             return error.ItemTooLong;
         }
 
-        @memcpy(self.temp_a[0..item_1_len], self.mmap_bytes[offset_1..offset_2]);
-        @memcpy(self.temp_b[0..item_2_len], self.mmap_bytes[offset_2..offset_3]);
-        const item_3 = self.mmap_bytes[offset_3..self.file_len];
+        @memcpy(self.temp_a[0..a_len], self.mmap_bytes[a_start..b_start]);
+        @memcpy(self.temp_b[0..b_len], self.mmap_bytes[b_start..c_start]);
+        const c_slice = self.mmap_bytes[c_start..end];
 
-        const base = offset_1;
-        @memcpy(self.mmap_bytes[base .. base + item_3_len], item_3);
-        @memcpy(self.mmap_bytes[base + item_3_len .. base + item_3_len + item_1_len], self.temp_a[0..item_1_len]);
-        @memcpy(self.mmap_bytes[base + item_3_len + item_1_len .. base + item_3_len + item_1_len + item_2_len], self.temp_b[0..item_2_len]);
+        const base = a_start;
+        @memcpy(self.mmap_bytes[base .. base + c_len], c_slice);
+        @memcpy(self.mmap_bytes[base + c_len .. base + c_len + a_len], self.temp_a[0..a_len]);
+        @memcpy(self.mmap_bytes[base + c_len + a_len .. base + c_len + a_len + b_len], self.temp_b[0..b_len]);
 
-        self.offsets.slice()[last_idx - 2] = base + item_3_len;
-        self.offsets.slice()[last_idx - 1] = base + item_3_len + item_1_len;
-        self.file_len = base + item_3_len + item_1_len + item_2_len;
+        self.offsets.slice()[last - 3] = base;
+        self.offsets.slice()[last - 2] = base + c_len;
+        self.offsets.slice()[last - 1] = base + c_len + a_len;
+        self.offsets.slice()[last] = base + c_len + a_len + b_len;
+        self.file_len = base + c_len + a_len + b_len;
 
         try posix.msync(self.mmap_bytes, posix.MSF.SYNC);
     }
 
     fn view(self: Stack) ?struct { first: []const u8, rest: []const u8 } {
-        if (self.offsets.len <= 1) return null;
+        if (self.len() == 0) return null;
 
         const offsets = self.offsets.constSlice();
-        const last_idx = self.offsets.len - 1;
+        const last_idx = self.len();
         const first_start = offsets[last_idx - 1];
         const first_end = offsets[last_idx];
         const first = self.mmap_bytes[first_start..first_end];
@@ -305,12 +320,18 @@ const App = struct {
 
     fn printStack(self: *App) !void {
         if (self.stack.view()) |view| {
-            try self.term.print(
-                "{s}{s}{s}{s}",
-                .{ cc.bold_on, view.first, cc.reset_attrs, view.rest },
-            );
-        } else {
-            return;
+            // Print the top item (first) in bold
+            try self.term.print("{s}{s}{s}", .{ cc.bold_on, view.first, cc.reset_attrs });
+
+            // Split rest into individual items and print in reverse order
+            const offsets = self.stack.offsets.constSlice();
+            var i: usize = offsets.len - 2; // Start from second-to-last offset
+            while (i > 0) : (i -= 1) {
+                const item_start = offsets[i - 1];
+                const item_end = offsets[i];
+                const item = self.stack.mmap_bytes[item_start..item_end];
+                try self.term.print("{s}", .{item});
+            }
         }
     }
 };
