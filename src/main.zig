@@ -98,7 +98,7 @@ const Stack = struct {
         return .{ .items = data, .len = len };
     }
 
-    fn push(self: *@This(), item: []const u8) !void {
+    fn push(self: *Stack, item: []const u8) !void {
         if (self.len >= max_stack_size) return error.StackOverflow;
         if (item.len >= max_item_size) return error.ItemTooLong;
         @memcpy(self.items[self.len][0..item.len], item);
@@ -106,14 +106,14 @@ const Stack = struct {
         try self.sync();
     }
 
-    fn drop(self: *@This()) !void {
+    fn drop(self: *Stack) !void {
         if (self.len == 0) return error.Underflow;
         self.len -= 1;
         @memset(&self.items[self.len], 0);
         try self.sync();
     }
 
-    fn swap(self: *@This()) !void {
+    fn swap(self: *Stack) !void {
         if (self.len < 2) return error.Underflow;
         @memcpy(&self.temp_a, &self.items[self.len - 1]);
         @memcpy(&self.items[self.len - 1], &self.items[self.len - 2]);
@@ -121,7 +121,7 @@ const Stack = struct {
         try self.sync();
     }
 
-    fn rot(self: *@This()) !void {
+    fn rot(self: *Stack) !void {
         if (self.len < 3) return error.Underflow;
         @memcpy(&self.temp_a, &self.items[self.len - 1]);
         @memcpy(&self.temp_b, &self.items[self.len - 2]);
@@ -131,7 +131,7 @@ const Stack = struct {
         try self.sync();
     }
 
-    fn sync(self: *@This()) !void {
+    fn sync(self: *Stack) !void {
         try posix.msync(@ptrCast(@alignCast(self.items)), posix.MSF.SYNC);
     }
 };
@@ -148,22 +148,22 @@ const App = struct {
     err_buf: [buf_size.err]u8 = .{0} ** buf_size.err,
     term: Term,
 
-    fn init(stack: *Stack) !@This() {
+    fn init(stack: *Stack) !App {
         var tui = try Term.init();
         try tui.rawMode(true);
         try tui.write(&.{ cc.clear, cc.cursor.hide });
         try tui.refresh();
 
-        return @This(){ .stack = stack, .term = tui };
+        return .{ .stack = stack, .term = tui };
     }
 
-    fn deinit(self: *@This()) void {
+    fn deinit(self: *App) void {
         self.term.write(&.{cc.clear}) catch unreachable;
         self.term.refresh() catch unreachable;
         self.term.deinit();
     }
 
-    fn mainLoop(self: *@This()) !void {
+    fn mainLoop(self: *App) !void {
         while (true) {
             try self.term.write(&.{ cc.clear, cc.cursor.home });
             try self.printStack();
@@ -185,7 +185,7 @@ const App = struct {
         }
     }
 
-    fn handleInput(self: *@This()) !void {
+    fn handleInput(self: *App) !void {
         return switch (try self.term.readByte()) {
             'q' => error.quit,
             's' => try self.stack.swap(),
@@ -199,7 +199,7 @@ const App = struct {
         };
     }
 
-    fn readLine(self: *@This()) ![]const u8 {
+    fn readLine(self: *App) ![]const u8 {
         @memset(&self.input_buf, 0);
 
         try self.term.write(&.{
@@ -220,7 +220,7 @@ const App = struct {
         return self.term.readString(&self.input_buf);
     }
 
-    fn printStack(self: *@This()) !void {
+    fn printStack(self: *App) !void {
         for (0..self.stack.len) |i| {
             const item = self.stack.items[self.stack.len - 1 - i];
             if (i == 0) {

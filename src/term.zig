@@ -39,7 +39,7 @@ pub const Term = struct {
     termios: struct { original: posix.termios, tui: posix.termios },
     ws: posix.winsize,
 
-    pub fn init() !@This() {
+    pub fn init() !Term {
         var ws: posix.winsize = undefined;
         const rc = posix.system.ioctl(1, posix.T.IOCGWINSZ, @intFromPtr(&ws));
         debug.assert(rc == 0);
@@ -58,7 +58,7 @@ pub const Term = struct {
     }
 
     /// Resets the terminal state to what it was before
-    pub fn deinit(self: *@This()) void {
+    pub fn deinit(self: *Term) void {
         const rc = posix.system.tcsetattr(
             io.getStdIn().handle,
             .NOW,
@@ -71,16 +71,20 @@ pub const Term = struct {
     }
 
     /// For runtime known values
-    pub fn print(self: *@This(), comptime format: []const u8, args: anytype) !void {
+    pub fn print(
+        self: *Term,
+        comptime format: []const u8,
+        args: anytype,
+    ) !void {
         var w = self.writer.writer();
         try w.print(format, args);
     }
 
-    pub fn refresh(self: *@This()) !void {
+    pub fn refresh(self: *Term) !void {
         try self.writer.flush();
     }
 
-    pub fn rawMode(self: *@This(), enabled: bool) !void {
+    pub fn rawMode(self: *Term, enabled: bool) !void {
         var term = self.termios.tui;
         term.lflag.ICANON = !enabled;
         term.lflag.ECHO = !enabled;
@@ -90,7 +94,7 @@ pub const Term = struct {
     }
 
     /// For comptime known values
-    pub fn write(self: *@This(), comptime codes: []const []const u8) !void {
+    pub fn write(self: *Term, comptime codes: []const []const u8) !void {
         const combined = comptime blk: {
             var result: []const u8 = "";
             for (codes) |code| {
@@ -103,16 +107,16 @@ pub const Term = struct {
 
     /// For runtime known cursor positons
     /// For comptime known, use cc.curosr.setPos
-    pub fn setCursorPos(self: *@This(), pos: CursorPos) !void {
+    pub fn setCursorPos(self: *Term, pos: CursorPos) !void {
         const w = self.writer.writer();
         try w.print(cc.cursor.set_pos_fmt_str, .{ pos.row, pos.col });
     }
 
-    pub fn readByte(self: @This()) !u8 {
+    pub fn readByte(self: Term) !u8 {
         return self.reader.readByte();
     }
 
-    pub fn readString(self: @This(), buf: []u8) ![]const u8 {
+    pub fn readString(self: Term, buf: []u8) ![]const u8 {
         const input = self.reader.readUntilDelimiter(buf, '\n') catch |err| {
             switch (err) {
                 error.StreamTooLong => {
