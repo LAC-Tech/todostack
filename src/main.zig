@@ -112,8 +112,6 @@ const Stack = struct {
             offset = index + 1;
         }
 
-        debug.assert(item_count == 4);
-
         return .{
             .fd = fd,
             .mmap_bytes = bytes,
