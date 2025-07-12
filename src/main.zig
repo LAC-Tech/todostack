@@ -150,11 +150,18 @@ const Stack = struct {
     fn drop(self: *Stack) !void {
         try self.ensureMinItemCount(1);
 
-        const prev_offset = self.offsets[self.item_count - 2];
-        try posix.ftruncate(self.fd, prev_offset);
-        self.file_len = prev_offset;
-        self.item_count -= 1;
+        if (self.item_count == 1) {
+            // Truncate to 0 if last item
+            try posix.ftruncate(self.fd, 0);
+            self.file_len = 0;
+        } else {
+            // Truncate to previous item's offset
+            const prev_offset = self.offsets[self.item_count - 2];
+            try posix.ftruncate(self.fd, prev_offset);
+            self.file_len = prev_offset;
+        }
 
+        self.item_count -= 1;
         try posix.msync(self.mmap_bytes, posix.MSF.SYNC);
     }
 
@@ -188,9 +195,43 @@ const Stack = struct {
         try posix.msync(self.mmap_bytes, posix.MSF.SYNC);
     }
 
+    // c b a -> b a c
     fn rot(self: *Stack) !void {
-        _ = self;
-        @panic("Implement ROT");
+        try self.ensureMinItemCount(3);
+
+        const old_a_offset = self.offsets[self.item_count - 1];
+        const old_b_offset = self.offsets[self.item_count - 2];
+        const old_c_offset = self.offsets[self.item_count - 3];
+
+        const a_len = self.file_len - old_a_offset;
+        const b_len = old_a_offset - old_b_offset;
+        const c_len = old_b_offset - old_c_offset;
+
+        if (a_len > max_item_size or b_len > max_item_size or c_len > max_item_size) {
+            return error.ItemTooLong;
+        }
+
+        // Stash A and B
+        const a = self.temp_a[0..a_len];
+        const b = self.temp_b[0..b_len];
+        @memcpy(a, self.mmap_bytes[old_a_offset..self.file_len]);
+        @memcpy(b, self.mmap_bytes[old_b_offset..old_a_offset]);
+
+        // Move C to the end
+        @memcpy(
+            self.mmap_bytes[old_c_offset + b_len + a_len .. old_c_offset + b_len + a_len + c_len],
+            self.mmap_bytes[old_c_offset..old_b_offset],
+        );
+
+        // Write B then A from temp
+        @memcpy(self.mmap_bytes[old_c_offset .. old_c_offset + b_len], b);
+        @memcpy(self.mmap_bytes[old_c_offset + b_len .. old_c_offset + b_len + a_len], a);
+
+        // Update offsets
+        self.offsets[self.item_count - 2] = @intCast(old_c_offset + b_len);
+        self.offsets[self.item_count - 1] = @intCast(old_c_offset + b_len + a_len);
+
+        try posix.msync(self.mmap_bytes, posix.MSF.SYNC);
     }
 
     fn view(self: Stack) ?struct { top: []const u8, rest: []const u8 } {
