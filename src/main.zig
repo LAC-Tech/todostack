@@ -167,8 +167,8 @@ const App = struct {
     }
 
     fn printStack(self: *App) !void {
-        for (0..self.stack.len) |i| {
-            const item = self.stack.items.get(self.stack.len - 1 - i);
+        for (0..self.stack.items.len) |i| {
+            const item = self.stack.items.get(i);
             if (i == 0) {
                 try self.term.print(
                     "{s}{s}{s}\n",
@@ -183,83 +183,84 @@ const App = struct {
 
 const Stack = struct {
     items: Items,
-    len: u8,
     temp_a: [max_item_size]u8 = .{0} ** max_item_size,
     temp_b: [max_item_size]u8 = .{0} ** max_item_size,
 
     fn init(bytes: []u8) Stack {
-        const items = Items.init(bytes);
-        var len: u8 = 0;
-        for (0..max_stack_size) |i| {
-            if (items.isEmpty(i)) break;
-            len = @intCast(i + 1);
-        }
-        return .{ .items = items, .len = len };
+        return .{ .items = Items.init(bytes) };
     }
 
     fn push(self: *Stack, item: []const u8) !void {
-        if (self.len >= max_stack_size) return error.StackOverflow;
+        if (self.items.len >= max_stack_size) return error.StackOverflow;
         if (item.len >= max_item_size) return error.ItemTooLong;
-        self.items.set(self.len, item);
-        self.len += 1;
+        self.items.push(item);
         try self.items.sync();
     }
 
     fn drop(self: *Stack) !void {
-        try self.ensureMinStackLen(1);
-        self.len -= 1;
-        self.items.clear(self.len);
+        try self.items.ensureMinLen(1);
+        self.items.drop();
         try self.items.sync();
     }
 
     fn swap(self: *Stack) !void {
-        try self.ensureMinStackLen(2);
-        @memcpy(&self.temp_a, self.items.get(self.len - 1));
-        self.items.copy(self.len - 2, self.len - 1);
-        @memcpy(self.items.get(self.len - 2), &self.temp_a);
+        try self.items.ensureMinLen(2);
+        @memcpy(&self.temp_a, self.items.get(0));
+        @memcpy(self.items.get(0), self.items.get(1));
+        @memcpy(self.items.get(1), &self.temp_a);
         try self.items.sync();
     }
 
     fn rot(self: *Stack) !void {
-        try self.ensureMinStackLen(3);
-        @memcpy(&self.temp_a, self.items.get(self.len - 1));
-        @memcpy(&self.temp_b, self.items.get(self.len - 2));
-        self.items.copy(self.len - 3, self.len - 1);
-        @memcpy(self.items.get(self.len - 2), &self.temp_a);
-        @memcpy(self.items.get(self.len - 3), &self.temp_b);
+        try self.items.ensureMinLen(3);
+        @memcpy(&self.temp_a, self.items.get(0));
+        @memcpy(&self.temp_b, self.items.get(1));
+        @memcpy(self.items.get(0), self.items.get(2));
+        @memcpy(self.items.get(1), &self.temp_a);
+        @memcpy(self.items.get(2), &self.temp_b);
         try self.items.sync();
-    }
-
-    fn ensureMinStackLen(self: Stack, n: usize) !void {
-        if (self.len < n) return error.Underflow;
     }
 };
 
 const Items = struct {
     bytes: *[max_stack_size][max_item_size]u8,
+    len: u8,
 
     fn init(data: []u8) Items {
-        return .{ .bytes = @ptrCast(data.ptr) };
+        const bytes: *[max_stack_size][max_item_size]u8 = @ptrCast(data.ptr);
+        var len: u8 = 0;
+        for (0..max_stack_size) |i| {
+            if (mem.allEqual(u8, &bytes[i], 0)) break;
+            len = @intCast(i + 1);
+        }
+        return .{ .bytes = bytes, .len = len };
     }
 
-    fn get(self: *Items, index: usize) []u8 {
-        return &self.bytes[index];
+    fn push(self: *Items, item: []const u8) void {
+        self.set(self.len, item);
+        self.len += 1;
     }
 
-    fn set(self: *Items, index: usize, item: []const u8) void {
-        @memcpy(self.bytes[index][0..item.len], item);
+    fn drop(self: *Items) void {
+        self.len -= 1;
+        @memset(&self.bytes[self.len], 0);
     }
 
-    fn clear(self: *Items, index: usize) void {
-        @memset(&self.bytes[index], 0);
+    fn get(self: *Items, idx: usize) []u8 {
+        return &self.bytes[self.len - 1 - idx];
+    }
+
+    fn set(self: *Items, idx: usize, item: []const u8) void {
+        const byte_offset = if (idx == self.len) self.len else self.len - 1 - idx;
+        @memcpy(self.bytes[byte_offset][0..item.len], item);
     }
 
     fn copy(self: *Items, from: usize, to: usize) void {
         @memcpy(&self.bytes[to], &self.bytes[from]);
     }
 
-    fn isEmpty(self: Items, index: usize) bool {
-        return mem.allEqual(u8, &self.bytes[index], 0);
+    fn ensureMinLen(self: *Items, n: usize) !void {
+        if (self.len < n) return error.Underflow;
     }
 
     fn sync(self: *Items) !void {
