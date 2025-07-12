@@ -118,14 +118,9 @@ pub const Term = struct {
 
     pub fn readString(self: Term, buf: []u8) ![]const u8 {
         const input = self.reader.readUntilDelimiter(buf, '\n') catch |err| {
-            switch (err) {
-                error.StreamTooLong => {
-                    // Consume the rest of the line to avoid bad state
-                    try self.reader.skipUntilDelimiterOrEof('\n');
-                    return error.InputTooLong;
-                },
-                else => return err,
-            }
+            // Reset reader state on any error
+            self.reader.skipUntilDelimiterOrEof('\n') catch unreachable;
+            return err;
         };
         return mem.trim(u8, input, " \t\r\n");
     }
