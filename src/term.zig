@@ -117,6 +117,7 @@ pub const Term = struct {
     }
 
     pub fn readString(self: Term, buf: []u8) ![]const u8 {
+        @memset(buf, 0);
         const input = self.reader.readUntilDelimiter(buf, '\n') catch |err| {
             // Reset reader state on any error
             self.reader.skipUntilDelimiterOrEof('\n') catch unreachable;

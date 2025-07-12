@@ -206,8 +206,10 @@ const Stack = struct {
     fn swap(self: *Stack) !void {
         try self.items.ensureMinLen(2);
         @memcpy(&self.temp_a, self.items.get(0));
-        self.items.set(0, self.items.get(1));
-        self.items.set(1, &self.temp_a);
+        self.items.set(&.{
+            .{ 0, self.items.get(1) },
+            .{ 1, &self.temp_a },
+        });
         try self.items.sync();
     }
 
@@ -215,9 +217,11 @@ const Stack = struct {
         try self.items.ensureMinLen(3);
         @memcpy(&self.temp_a, self.items.get(0));
         @memcpy(&self.temp_b, self.items.get(1));
-        self.items.set(0, self.items.get(2));
-        self.items.set(1, &self.temp_a);
-        self.items.set(2, &self.temp_b);
+        self.items.set(&.{
+            .{ 0, self.items.get(2) },
+            .{ 1, &self.temp_a },
+            .{ 2, &self.temp_b },
+        });
         try self.items.sync();
     }
 };
@@ -250,9 +254,11 @@ const Items = struct {
         return &self.bytes[self.len - 1 - idx];
     }
 
-    fn set(self: *Items, idx: usize, item: []const u8) void {
-        const byte_offset = self.len - 1 - idx;
-        @memcpy(self.bytes[byte_offset][0..item.len], item);
+    fn set(self: *Items, items: []const struct { usize, []const u8 }) void {
+        for (items) |entry| {
+            const byte_offset = self.len - 1 - entry[0];
+            @memcpy(self.bytes[byte_offset][0..entry[1].len], entry[1]);
+        }
     }
 
     fn ensureMinLen(self: *Items, n: usize) !void {
