@@ -183,9 +183,9 @@ const App = struct {
 
 const Stack = struct {
     items: Items,
+    len: u8,
     temp_a: [max_item_size]u8 = .{0} ** max_item_size,
     temp_b: [max_item_size]u8 = .{0} ** max_item_size,
-    len: u8,
 
     fn init(bytes: []u8) Stack {
         const items = Items.init(bytes);
