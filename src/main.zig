@@ -82,66 +82,6 @@ fn printUsage() void {
     debug.print("\ttds -n <name>\t\t- Create new file <name>.{s}\n", .{file_ext});
 }
 
-const Stack = struct {
-    items: *[max_stack_size][max_item_size]u8,
-    temp_a: [max_item_size]u8 = .{0} ** max_item_size,
-    temp_b: [max_item_size]u8 = .{0} ** max_item_size,
-    len: u8,
-
-    fn init(bytes: []u8) Stack {
-        const data: *[max_stack_size][max_item_size]u8 = @ptrCast(bytes.ptr);
-        var len: u8 = 0;
-        for (data, 0..) |item, i| {
-            if (mem.allEqual(u8, &item, 0)) break;
-            len = @intCast(i + 1);
-        }
-        return .{ .items = data, .len = len };
-    }
-
-    fn push(self: *Stack, item: []const u8) !void {
-        if (self.len >= max_stack_size) return error.StackOverflow;
-        if (item.len >= max_item_size) return error.ItemTooLong;
-        @memcpy(self.items[self.len][0..item.len], item);
-        self.len += 1;
-        try self.sync();
-    }
-
-    fn drop(self: *Stack) !void {
-        if (self.len == 0) return error.Underflow;
-        self.len -= 1;
-        @memset(&self.items[self.len], 0);
-        try self.sync();
-    }
-
-    fn swap(self: *Stack) !void {
-        if (self.len < 2) return error.Underflow;
-        @memcpy(&self.temp_a, &self.items[self.len - 1]);
-        @memcpy(&self.items[self.len - 1], &self.items[self.len - 2]);
-        @memcpy(&self.items[self.len - 2], &self.temp_a);
-        try self.sync();
-    }
-
-    fn rot(self: *Stack) !void {
-        if (self.len < 3) return error.Underflow;
-        @memcpy(&self.temp_a, &self.items[self.len - 1]);
-        @memcpy(&self.temp_b, &self.items[self.len - 2]);
-        @memcpy(&self.items[self.len - 1], &self.items[self.len - 3]);
-        @memcpy(&self.items[self.len - 2], &self.temp_a);
-        @memcpy(&self.items[self.len - 3], &self.temp_b);
-        try self.sync();
-    }
-
-    fn sync(self: *Stack) !void {
-        try posix.msync(@ptrCast(@alignCast(self.items)), posix.MSF.SYNC);
-    }
-};
-
-const buf_size = struct {
-    const input = max_item_size + 1; // to allow room for newline;
-    const err = 1024;
-    const filename = 512; // Daniel's Constant
-};
-
 const App = struct {
     stack: *Stack,
     input_buf: [buf_size.input]u8 = .{0} ** buf_size.input,
@@ -233,4 +173,64 @@ const App = struct {
             }
         }
     }
+};
+
+const Stack = struct {
+    items: *[max_stack_size][max_item_size]u8,
+    temp_a: [max_item_size]u8 = .{0} ** max_item_size,
+    temp_b: [max_item_size]u8 = .{0} ** max_item_size,
+    len: u8,
+
+    fn init(bytes: []u8) Stack {
+        const data: *[max_stack_size][max_item_size]u8 = @ptrCast(bytes.ptr);
+        var len: u8 = 0;
+        for (data, 0..) |item, i| {
+            if (mem.allEqual(u8, &item, 0)) break;
+            len = @intCast(i + 1);
+        }
+        return .{ .items = data, .len = len };
+    }
+
+    fn push(self: *Stack, item: []const u8) !void {
+        if (self.len >= max_stack_size) return error.StackOverflow;
+        if (item.len >= max_item_size) return error.ItemTooLong;
+        @memcpy(self.items[self.len][0..item.len], item);
+        self.len += 1;
+        try self.sync();
+    }
+
+    fn drop(self: *Stack) !void {
+        if (self.len == 0) return error.Underflow;
+        self.len -= 1;
+        @memset(&self.items[self.len], 0);
+        try self.sync();
+    }
+
+    fn swap(self: *Stack) !void {
+        if (self.len < 2) return error.Underflow;
+        @memcpy(&self.temp_a, &self.items[self.len - 1]);
+        @memcpy(&self.items[self.len - 1], &self.items[self.len - 2]);
+        @memcpy(&self.items[self.len - 2], &self.temp_a);
+        try self.sync();
+    }
+
+    fn rot(self: *Stack) !void {
+        if (self.len < 3) return error.Underflow;
+        @memcpy(&self.temp_a, &self.items[self.len - 1]);
+        @memcpy(&self.temp_b, &self.items[self.len - 2]);
+        @memcpy(&self.items[self.len - 1], &self.items[self.len - 3]);
+        @memcpy(&self.items[self.len - 2], &self.temp_a);
+        @memcpy(&self.items[self.len - 3], &self.temp_b);
+        try self.sync();
+    }
+
+    fn sync(self: *Stack) !void {
+        try posix.msync(@ptrCast(@alignCast(self.items)), posix.MSF.SYNC);
+    }
+};
+
+const buf_size = struct {
+    const input = max_item_size + 1; // to allow room for newline;
+    const err = 1024;
+    const filename = 512; // Daniel's Constant
 };
