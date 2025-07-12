@@ -101,15 +101,18 @@ const Stack = struct {
         const file_bytes = bytes[0..file_len];
 
         var offsets = [_]u16{math.maxInt(u16)} ** max_stack_size;
+
         var item_count: usize = 0;
-        if (!mem.allEqual(u8, file_bytes, 0)) {
-            for (file_bytes, 0..) |byte, i| {
-                if (byte != '\n') continue;
-                const newline_idx: u16 = @intCast(i);
-                try offsets.append(newline_idx + 1);
-                item_count += 1;
-            }
+        var offset: usize = 0;
+
+        while (mem.indexOfScalarPos(u8, file_bytes, offset, '\n')) |index| {
+            if (item_count >= offsets.len) return error.BufferTooSmall;
+            offsets[item_count] = @intCast(offset);
+            item_count += 1;
+            offset = index + 1;
         }
+
+        debug.assert(item_count == 4);
 
         return .{
             .fd = fd,
@@ -121,11 +124,11 @@ const Stack = struct {
     }
 
     fn ensureMinItemCount(self: Stack, min_len: usize) !void {
-        if (self.offsets.len() >= min_len) return error.StackOverflow;
+        if (self.item_count >= min_len) return error.StackUnderflow;
     }
 
     fn push(self: *Stack, item: []const u8) !void {
-        if (self.len() >= max_stack_size) return error.StackOverflow;
+        if (self.item_count >= max_stack_size) return error.StackOverflow;
         // including newline
         if (item.len > max_item_size + 1) return error.ItemTooLong;
         if (item.len == 0) return;
@@ -134,10 +137,13 @@ const Stack = struct {
         const new_size = self.file_len + item.len;
         if (new_size > max_file_size) return error.FileTooLarge;
 
-        const bytes_appended: u16 = @intCast(try posix.pwrite(self.fd, item, self.file_len));
+        const bytes_appended: u16 = @intCast(
+            try posix.pwrite(self.fd, item, self.file_len),
+        );
         debug.assert(bytes_appended == item.len);
 
-        try self.offsets.append(self.file_len);
+        self.offsets[self.item_count] = @intCast(self.file_len);
+        self.item_count += 1;
         self.file_len += bytes_appended;
 
         try posix.msync(self.mmap_bytes, posix.MSF.SYNC);
@@ -146,85 +152,60 @@ const Stack = struct {
     fn drop(self: *Stack) !void {
         try self.ensureMinItemCount(1);
 
-        const prev_offset = self.offsets.pop();
+        const prev_offset = self.offsets[self.item_count - 2];
         try posix.ftruncate(self.fd, prev_offset);
         self.file_len = prev_offset;
+        self.item_count -= 1;
 
         try posix.msync(self.mmap_bytes, posix.MSF.SYNC);
     }
 
-    // a b -> b a
+    // b a -> a b
     fn swap(self: *Stack) !void {
         try self.ensureMinItemCount(2);
 
-        const a_offset = self.offsets[self.item_count - 1];
-        const b_offset = self.offsets[self.item_count - 2];
-        const a_len = self.file_len - a_offset;
-        const b_len = a_offset - b_offset;
+        const old_a_offset = self.offsets[self.item_count - 1];
+        const old_b_offset = self.offsets[self.item_count - 2];
 
-        // Stash A & B
+        const a_len = self.file_len - old_a_offset;
+        const b_len = old_a_offset - old_b_offset;
+
+        // Stash A
         const a = self.temp_a[0..a_len];
-        const b = self.temp_b[0..b_len];
-        @memcpy(a, self.mmap_bytes[a_offset..self.file_len]);
-        @memcpy(b, self.mmap_bytes[b_offset..a_offset]);
+        @memcpy(a, self.mmap_bytes[old_a_offset..self.file_len]);
 
-        // Write
-        const new_b_offset = b_offset + a_len;
-        const new_a_offset = new_b_offset + b_len;
-        @memcpy(self.mmap_bytes[b_offset..new_b_offset], a);
-        @memcpy(self.mmap_bytes[new_b_offset..new_a_offset], b);
+        // Write B
+        const new_b_offset = old_b_offset + a_len;
+        @memcpy(
+            self.mmap_bytes[new_b_offset .. new_b_offset + b_len],
+            self.mmap_bytes[old_b_offset .. old_b_offset + b_len],
+        );
 
-        // Update offsets
-        self.offsets[self.offsets - 1] = new_a_offset;
-        self.offsets[self.offsets - 2] = new_b_offset;
+        // Write A
+        @memcpy(self.mmap_bytes[old_b_offset..new_b_offset], a);
+
+        // Update offset
+        self.offsets[self.item_count - 1] = @intCast(new_b_offset);
 
         try posix.msync(self.mmap_bytes, posix.MSF.SYNC);
     }
 
     fn rot(self: *Stack) !void {
-        try self.ensureMinItemCount(3);
-
-        const offsets = self.offsets.constSlice();
-        const last = self.len();
-
-        const a_start = offsets[last - 3];
-        const b_start = offsets[last - 2];
-        const c_start = offsets[last - 1];
-        const end = offsets[last];
-
-        const a_len = b_start - a_start;
-        const b_len = c_start - b_start;
-        const c_len = end - c_start;
-
-        @memcpy(self.temp_a[0..a_len], self.mmap_bytes[a_start..b_start]);
-        @memcpy(self.temp_b[0..b_len], self.mmap_bytes[b_start..c_start]);
-        const c_slice = self.mmap_bytes[c_start..end];
-
-        const base = a_start;
-        @memcpy(self.mmap_bytes[base .. base + c_len], c_slice);
-        @memcpy(self.mmap_bytes[base + c_len .. base + c_len + a_len], self.temp_a[0..a_len]);
-        @memcpy(self.mmap_bytes[base + c_len + a_len .. base + c_len + a_len + b_len], self.temp_b[0..b_len]);
-
-        self.offsets.slice()[last - 3] = base;
-        self.offsets.slice()[last - 2] = base + c_len;
-        self.offsets.slice()[last - 1] = base + c_len + a_len;
-        self.offsets.slice()[last] = base + c_len + a_len + b_len;
-        self.file_len = base + c_len + a_len + b_len;
-
-        try posix.msync(self.mmap_bytes, posix.MSF.SYNC);
+        _ = self;
+        @panic("Implement ROT");
     }
 
-    fn view(self: Stack) ?struct { first: []const u8, rest: []const u8 } {
-        if (self.len() == 0) return null;
+    fn view(self: Stack) ?struct { top: []const u8, rest: []const u8 } {
+        if (self.item_count == 0) return null;
 
-        const offsets = self.offsets.constSlice();
-        const last_idx = self.len();
-        const first_start = offsets[last_idx - 1];
-        const first_end = offsets[last_idx];
-        const first = self.mmap_bytes[first_start..first_end];
-        const rest = self.mmap_bytes[0..first_start];
+        debug.assert(self.offsets[0] == 0);
+        const last_offset = self.offsets[self.item_count - 1];
 
-        return .{ .first = first, .rest = rest };
+        return .{
+            // TOS is the last line
+            .top = self.mmap_bytes[last_offset..self.file_len],
+            .rest = self.mmap_bytes[0..last_offset],
+        };
     }
 };
 
@@ -313,19 +294,20 @@ const App = struct {
     }
 
     fn printStack(self: *App) !void {
-        if (self.stack.view()) |view| {
-            // Print the top item (first) in bold
-            try self.term.print("{s}{s}{s}", .{ cc.bold_on, view.first, cc.reset_attrs });
+        const view = self.stack.view() orelse return;
 
-            // Split rest into individual items and print in reverse order
-            const offsets = self.stack.offsets.constSlice();
-            var i: usize = offsets.len - 2; // Start from second-to-last offset
-            while (i > 0) : (i -= 1) {
-                const item_start = offsets[i - 1];
-                const item_end = offsets[i];
-                const item = self.stack.mmap_bytes[item_start..item_end];
-                try self.term.print("{s}", .{item});
-            }
+        // Print the top item (first) in bold
+        try self.term.print(
+            "{s}{s}{s}",
+            .{ cc.bold_on, view.top, cc.reset_attrs },
+        );
+
+        var lines = mem.splitBackwardsScalar(u8, view.rest, '\n');
+        // First one is always an empty newline
+        _ = lines.next();
+
+        while (lines.next()) |line| {
+            try self.term.print("{s}\n", .{line});
         }
     }
 };
