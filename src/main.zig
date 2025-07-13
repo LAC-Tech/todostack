@@ -126,7 +126,7 @@ const App = struct {
             'r' => try self.stack.rot(),
             'p' => {
                 const line = try self.readLine();
-                if (line.len > 0) try self.stack.push(line);
+                if (line.len > 1) try self.stack.push(line);
             },
             else => {},
         };
@@ -194,10 +194,11 @@ const Stack = struct {
 
     fn swap(self: *Stack) !void {
         try self.items.ensureMinLen(2);
-        @memcpy(&self.temp_a, self.items.get(0));
+        const a = self.items.get(0);
+        @memcpy(self.temp_a[0..a.len], a);
         self.items.set(&.{
-            .{ 0, self.items.get(1) },
-            .{ 1, &self.temp_a },
+            self.items.get(1),
+            self.temp_a[0..a.len],
         });
         try self.items.sync();
     }
@@ -207,9 +208,9 @@ const Stack = struct {
         @memcpy(&self.temp_a, self.items.get(0));
         @memcpy(&self.temp_b, self.items.get(1));
         self.items.set(&.{
-            .{ 0, self.items.get(2) },
-            .{ 1, &self.temp_a },
-            .{ 2, &self.temp_b },
+            self.items.get(2),
+            &self.temp_a,
+            &self.temp_b,
         });
         try self.items.sync();
     }
@@ -242,7 +243,7 @@ const Items = struct {
         for (bytes[0..@intCast(stat.size)], 0..) |byte, i| {
             if (byte == '\n') {
                 len += 1;
-                offsets[len] = @intCast(i);
+                offsets[len] = @intCast(i + 1);
             }
         }
 
@@ -271,14 +272,12 @@ const Items = struct {
         return self.bytes[start..end];
     }
 
-    fn set(self: *Items, items: []const struct { usize, []const u8 }) void {
-        for (items) |entry| {
-            const idx, const item = entry;
-            const offset_idx = self.len - 1 - idx;
-            const start = self.offsets[offset_idx];
-            const end = start + item.len;
+    fn set(self: *Items, items: []const []const u8) void {
+        for (items, 0..) |item, idx| {
+            const end = self.offsets[self.len - idx];
+            const start = end - item.len;
             @memcpy(self.bytes[start..end], item);
-            self.offsets[offset_idx + 1] = @intCast(end);
+            self.offsets[self.len - 1 - idx] = @intCast(start);
         }
     }
 
