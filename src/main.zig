@@ -266,7 +266,7 @@ const Items = struct {
     fn get(self: *Items, idx: usize) []u8 {
         const offset_idx = self.len - 1 - idx;
         const start = self.offsets[offset_idx];
-        const end = start + self.offsets[offset_idx + 1];
+        const end = self.offsets[offset_idx + 1];
 
         return self.bytes[start..end];
     }
