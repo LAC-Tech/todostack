@@ -13,7 +13,7 @@ const Term = term.Term;
 
 const max_stack_size = 64;
 const max_item_size = 64;
-const file_size = max_stack_size * max_item_size;
+const mmap_size = 4095;
 const file_ext = "tds.bin";
 
 const buf_size = struct {
@@ -223,13 +223,13 @@ const Items = struct {
     fn init(fd: posix.fd_t) !Items {
         const mmapd_bytes = try posix.mmap(
             null,
-            file_size,
+            mmap_size,
             posix.PROT.READ | posix.PROT.WRITE,
             .{ .TYPE = .SHARED },
             fd,
             0,
         );
-        debug.assert(mmapd_bytes.len == file_size);
+        debug.assert(mmapd_bytes.len == mmap_size);
 
         const stat = try posix.fstat(fd);
 
