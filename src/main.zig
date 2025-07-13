@@ -64,10 +64,7 @@ fn openFile(name: []const u8, create: bool, buf: []u8) !posix.fd_t {
         0o666,
     );
     if (create) {
-        try posix.ftruncate(fd, file_size);
         try posix.fsync(fd);
-    } else if ((try posix.fstat(fd)).size != file_size) {
-        return error.InvalidFileSize;
     }
     return fd;
 }
@@ -183,13 +180,13 @@ const Stack = struct {
     fn push(self: *Stack, item: []const u8) !void {
         if (self.items.len >= max_stack_size) return error.StackOverflow;
         if (item.len >= max_item_size) return error.ItemTooLong;
-        self.items.push(item);
+        try self.items.push(item);
         try self.items.sync();
     }
 
     fn drop(self: *Stack) !void {
         try self.items.ensureMinLen(1);
-        self.items.drop();
+        try self.items.drop();
         try self.items.sync();
     }
 
@@ -217,6 +214,7 @@ const Stack = struct {
 };
 
 const Items = struct {
+    fd: posix.fd_t,
     bytes: *[max_stack_size][max_item_size]u8,
     len: u8,
 
@@ -231,25 +229,29 @@ const Items = struct {
         );
         debug.assert(mmapd_bytes.len == file_size);
 
+        const stat = try posix.fstat(fd);
+
         const bytes: *[max_stack_size][max_item_size]u8 =
             @ptrCast(mmapd_bytes.ptr);
+
         var len: u8 = 0;
         for (0..max_stack_size) |i| {
-            if (mem.allEqual(u8, &bytes[i], 0)) break;
+            if ((i * max_item_size) >= stat.size) break;
             len = @intCast(i + 1);
         }
-        return .{ .bytes = bytes, .len = len };
+
+        return .{ .fd = fd, .bytes = bytes, .len = len };
     }
 
-    fn push(self: *Items, item: []const u8) void {
-        const dest = self.bytes[self.len][0..item.len];
-        @memcpy(dest, item);
+    fn push(self: *Items, item: []const u8) !void {
+        _ = try posix.pwrite(self.fd, item, self.len * max_item_size);
         self.len += 1;
     }
 
-    fn drop(self: *Items) void {
-        @memset(&self.bytes[self.len], 0);
+    fn drop(self: *Items) !void {
         self.len -= 1;
+        try posix.ftruncate(self.fd, max_item_size * self.len);
+        @memset(&self.bytes[self.len], 0);
     }
 
     fn get(self: *Items, idx: usize) []u8 {
