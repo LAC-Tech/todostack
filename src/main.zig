@@ -284,16 +284,13 @@ const Items = struct {
     }
 
     fn set(self: *Items, items: []const []const u8) void {
-        const byte_size = self.offsets[self.len];
         for (items, 0..) |item, idx| {
             const end = self.offsets[self.len - idx];
             const start = end - item.len;
 
-            mem.copyForwards(u8, self.bytes[start..end], item);
+            @memcpy(self.bytes[start..end], item);
             self.offsets[self.len - 1 - idx] = @intCast(start);
         }
-
-        debug.assert(byte_size == self.offsets[self.len]);
     }
 
     fn ensureMinLen(self: *Items, n: usize) !void {
