@@ -11,13 +11,13 @@ const term = @import("./term.zig");
 const cc = term.cc;
 const Term = term.Term;
 
-const max_stack_size = 64;
-const max_item_size = 64;
-const mmap_size = 4095;
+const max_stack_len = 64;
+const max_item_len = 64;
+const mmap_size = max_stack_len * max_item_len;
 const file_ext = "tds.txt";
 
 const buf_size = struct {
-    const input = max_item_size + 1; // to allow room for newline;
+    const input = max_item_len + 1; // to allow room for newline;
     const err = 1024;
     const filename = 512; // Daniel's Constant
 };
@@ -172,17 +172,17 @@ const App = struct {
 
 const Stack = struct {
     items: Items,
-    temp_a: [max_item_size]u8 = .{0} ** max_item_size,
-    temp_b: [max_item_size]u8 = .{0} ** max_item_size,
-    temp_c: [max_item_size]u8 = .{0} ** max_item_size,
+    temp_a: [max_item_len]u8 = .{0} ** max_item_len,
+    temp_b: [max_item_len]u8 = .{0} ** max_item_len,
+    temp_c: [max_item_len]u8 = .{0} ** max_item_len,
 
     fn init(fd: posix.fd_t) !Stack {
         return .{ .items = try Items.init(fd) };
     }
 
     fn push(self: *Stack, item: []const u8) !void {
-        if (self.items.len >= max_stack_size) return error.StackOverflow;
-        if (item.len >= max_item_size) return error.ItemTooLong;
+        if (self.items.len >= max_stack_len) return error.StackOverflow;
+        if (item.len >= max_item_len) return error.ItemTooLong;
         try self.items.push(item);
         try self.items.sync();
     }
@@ -228,7 +228,7 @@ const Stack = struct {
 };
 
 const Items = struct {
-    const max_offsets = max_stack_size + 1;
+    const max_offsets = max_stack_len + 1;
 
     fd: posix.fd_t,
     bytes: []u8,
