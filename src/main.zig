@@ -30,17 +30,7 @@ pub fn main() !void {
     };
     const fd = try openFile(args.filename, args.create, &filename_buf);
 
-    const bytes = try posix.mmap(
-        null,
-        file_size,
-        posix.PROT.READ | posix.PROT.WRITE,
-        .{ .TYPE = .SHARED },
-        fd,
-        0,
-    );
-    debug.assert(bytes.len == file_size);
-
-    var stack = Stack.init(bytes);
+    var stack = try Stack.init(fd);
     var app = try App.init(&stack);
     try app.mainLoop();
 
@@ -186,8 +176,8 @@ const Stack = struct {
     temp_a: [max_item_size]u8 = .{0} ** max_item_size,
     temp_b: [max_item_size]u8 = .{0} ** max_item_size,
 
-    fn init(bytes: []u8) Stack {
-        return .{ .items = Items.init(bytes) };
+    fn init(fd: posix.fd_t) !Stack {
+        return .{ .items = try Items.init(fd) };
     }
 
     fn push(self: *Stack, item: []const u8) !void {
@@ -230,8 +220,19 @@ const Items = struct {
     bytes: *[max_stack_size][max_item_size]u8,
     len: u8,
 
-    fn init(data: []u8) Items {
-        const bytes: *[max_stack_size][max_item_size]u8 = @ptrCast(data.ptr);
+    fn init(fd: posix.fd_t) !Items {
+        const mmapd_bytes = try posix.mmap(
+            null,
+            file_size,
+            posix.PROT.READ | posix.PROT.WRITE,
+            .{ .TYPE = .SHARED },
+            fd,
+            0,
+        );
+        debug.assert(mmapd_bytes.len == file_size);
+
+        const bytes: *[max_stack_size][max_item_size]u8 =
+            @ptrCast(mmapd_bytes.ptr);
         var len: u8 = 0;
         for (0..max_stack_size) |i| {
             if (mem.allEqual(u8, &bytes[i], 0)) break;
