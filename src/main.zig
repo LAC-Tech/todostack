@@ -216,8 +216,11 @@ const Stack = struct {
 };
 
 const Items = struct {
+    const max_offsets = max_stack_size + 1;
+
     fd: posix.fd_t,
     bytes: *[max_stack_size][max_item_size]u8,
+    offsets: [max_offsets]u16,
     len: u8,
 
     fn init(fd: posix.fd_t) !Items {
@@ -236,13 +239,15 @@ const Items = struct {
         const bytes: *[max_stack_size][max_item_size]u8 =
             @ptrCast(mmapd_bytes.ptr);
 
+        const offsets = [_]u16{0} ** max_offsets;
+
         var len: u8 = 0;
         for (0..max_stack_size) |i| {
             if ((i * max_item_size) >= stat.size) break;
             len = @intCast(i + 1);
         }
 
-        return .{ .fd = fd, .bytes = bytes, .len = len };
+        return .{ .fd = fd, .bytes = bytes, .offsets = offsets, .len = len };
     }
 
     fn push(self: *Items, item: []const u8) !void {
