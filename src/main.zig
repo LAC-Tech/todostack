@@ -241,7 +241,8 @@ const Items = struct {
     }
 
     fn push(self: *Items, item: []const u8) void {
-        @memcpy(self.bytes[self.len][0..item.len], item);
+        const dest = self.bytes[self.len][0..item.len];
+        @memcpy(dest, item);
         self.len += 1;
     }
 
