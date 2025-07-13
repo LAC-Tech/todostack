@@ -14,7 +14,7 @@ const Term = term.Term;
 const max_stack_size = 64;
 const max_item_size = 64;
 const mmap_size = 4095;
-const file_ext = "tds.bin";
+const file_ext = "tds.txt";
 
 const buf_size = struct {
     const input = max_item_size + 1; // to allow room for newline;
@@ -219,12 +219,12 @@ const Items = struct {
     const max_offsets = max_stack_size + 1;
 
     fd: posix.fd_t,
-    bytes: *[max_stack_size][max_item_size]u8,
+    bytes: []u8,
     offsets: [max_offsets]u16,
     len: u8,
 
     fn init(fd: posix.fd_t) !Items {
-        const mmapd_bytes = try posix.mmap(
+        const bytes = try posix.mmap(
             null,
             mmap_size,
             posix.PROT.READ | posix.PROT.WRITE,
@@ -232,43 +232,53 @@ const Items = struct {
             fd,
             0,
         );
-        debug.assert(mmapd_bytes.len == mmap_size);
+        debug.assert(bytes.len == mmap_size);
 
         const stat = try posix.fstat(fd);
 
-        const bytes: *[max_stack_size][max_item_size]u8 =
-            @ptrCast(mmapd_bytes.ptr);
-
-        const offsets = [_]u16{0} ** max_offsets;
-
+        var offsets = [_]u16{0} ** max_offsets;
         var len: u8 = 0;
-        for (0..max_stack_size) |i| {
-            if ((i * max_item_size) >= stat.size) break;
-            len = @intCast(i + 1);
+
+        for (bytes[0..@intCast(stat.size)], 0..) |byte, i| {
+            if (byte == '\n') {
+                len += 1;
+                offsets[len] = @intCast(i);
+            }
         }
 
         return .{ .fd = fd, .bytes = bytes, .offsets = offsets, .len = len };
     }
 
     fn push(self: *Items, item: []const u8) !void {
-        _ = try posix.pwrite(self.fd, item, self.len * max_item_size);
+        const offset = self.offsets[self.len];
+        const bytes_Written: u16 = @intCast(
+            try posix.pwrite(self.fd, item, offset),
+        );
         self.len += 1;
+        self.offsets[self.len] = offset + bytes_Written;
     }
 
     fn drop(self: *Items) !void {
         self.len -= 1;
-        try posix.ftruncate(self.fd, max_item_size * self.len);
-        @memset(&self.bytes[self.len], 0);
+        try posix.ftruncate(self.fd, self.offsets[self.len]);
     }
 
     fn get(self: *Items, idx: usize) []u8 {
-        return &self.bytes[self.len - 1 - idx];
+        const offset_idx = self.len - 1 - idx;
+        const start = self.offsets[offset_idx];
+        const end = start + self.offsets[offset_idx + 1];
+
+        return self.bytes[start..end];
     }
 
     fn set(self: *Items, items: []const struct { usize, []const u8 }) void {
         for (items) |entry| {
-            const byte_offset = self.len - 1 - entry[0];
-            @memcpy(self.bytes[byte_offset][0..entry[1].len], entry[1]);
+            const idx, const item = entry;
+            const offset_idx = self.len - 1 - idx;
+            const start = self.offsets[offset_idx];
+            const end = start + item.len;
+            @memcpy(self.bytes[start..end], item);
+            self.offsets[offset_idx + 1] = @intCast(end);
         }
     }
 
