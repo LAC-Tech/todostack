@@ -174,6 +174,7 @@ const Stack = struct {
     items: Items,
     temp_a: [max_item_size]u8 = .{0} ** max_item_size,
     temp_b: [max_item_size]u8 = .{0} ** max_item_size,
+    temp_c: [max_item_size]u8 = .{0} ** max_item_size,
 
     fn init(fd: posix.fd_t) !Stack {
         return .{ .items = try Items.init(fd) };
@@ -195,9 +196,13 @@ const Stack = struct {
     fn swap(self: *Stack) !void {
         try self.items.ensureMinLen(2);
         const a = self.items.get(0);
+        const b = self.items.get(1);
+
         @memcpy(self.temp_a[0..a.len], a);
+        @memcpy(self.temp_b[0..b.len], b);
+
         self.items.set(&.{
-            self.items.get(1),
+            self.temp_b[0..b.len],
             self.temp_a[0..a.len],
         });
         try self.items.sync();
@@ -205,12 +210,18 @@ const Stack = struct {
 
     fn rot(self: *Stack) !void {
         try self.items.ensureMinLen(3);
-        @memcpy(&self.temp_a, self.items.get(0));
-        @memcpy(&self.temp_b, self.items.get(1));
+        const a = self.items.get(0);
+        const b = self.items.get(1);
+        const c = self.items.get(2);
+
+        @memcpy(self.temp_a[0..a.len], a);
+        @memcpy(self.temp_b[0..b.len], b);
+        @memcpy(self.temp_c[0..c.len], c);
+
         self.items.set(&.{
-            self.items.get(2),
-            &self.temp_a,
-            &self.temp_b,
+            self.temp_c[0..c.len],
+            self.temp_a[0..a.len],
+            self.temp_b[0..b.len],
         });
         try self.items.sync();
     }
@@ -252,11 +263,11 @@ const Items = struct {
 
     fn push(self: *Items, item: []const u8) !void {
         const offset = self.offsets[self.len];
-        const bytes_Written: u16 = @intCast(
+        const bytes_written: u16 = @intCast(
             try posix.pwrite(self.fd, item, offset),
         );
         self.len += 1;
-        self.offsets[self.len] = offset + bytes_Written;
+        self.offsets[self.len] = offset + bytes_written;
     }
 
     fn drop(self: *Items) !void {
@@ -273,12 +284,16 @@ const Items = struct {
     }
 
     fn set(self: *Items, items: []const []const u8) void {
+        const byte_size = self.offsets[self.len];
         for (items, 0..) |item, idx| {
             const end = self.offsets[self.len - idx];
             const start = end - item.len;
-            @memcpy(self.bytes[start..end], item);
+
+            mem.copyForwards(u8, self.bytes[start..end], item);
             self.offsets[self.len - 1 - idx] = @intCast(start);
         }
+
+        debug.assert(byte_size == self.offsets[self.len]);
     }
 
     fn ensureMinLen(self: *Items, n: usize) !void {
