@@ -150,7 +150,8 @@ const App = struct {
             self.term.refresh() catch unreachable;
         }
 
-        return self.term.readString(&self.input_buf);
+        const end = try self.term.readString(&self.input_buf);
+        return self.input_buf[0..end];
     }
 
     fn printStack(self: *App) !void {

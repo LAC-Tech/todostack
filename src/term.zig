@@ -116,14 +116,15 @@ pub const Term = struct {
         return self.reader.readByte();
     }
 
-    pub fn readString(self: Term, buf: []u8) ![]const u8 {
+    pub fn readString(self: Term, buf: []u8) !usize {
         @memset(buf, 0);
         const input = self.reader.readUntilDelimiter(buf, '\n') catch |err| {
             // Reset reader state on any error
             self.reader.skipUntilDelimiterOrEof('\n') catch unreachable;
             return err;
         };
-        return mem.trim(u8, input, " \t\r\n");
+
+        return mem.trim(u8, input, " \t\r\n").len;
     }
 };
 
