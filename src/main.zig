@@ -151,7 +151,8 @@ const App = struct {
         }
 
         const end = try self.term.readString(&self.input_buf);
-        return self.input_buf[0..end];
+        self.input_buf[end] = '\n';
+        return self.input_buf[0 .. end + 1];
     }
 
     fn printStack(self: *App) !void {
@@ -159,11 +160,11 @@ const App = struct {
             const item = self.stack.items.get(i);
             if (i == 0) {
                 try self.term.print(
-                    "{s}{s}{s}\n",
+                    "{s}{s}{s}",
                     .{ cc.bold_on, item, cc.reset_attrs },
                 );
             } else {
-                try self.term.print("{s}\n", .{item});
+                try self.term.print("{s}", .{item});
             }
         }
     }
