@@ -156,16 +156,17 @@ const App = struct {
     }
 
     fn printStack(self: *App) !void {
-        for (0..self.stack.items.len) |i| {
+        if (self.stack.items.len == 0) return;
+
+        const top = self.stack.items.get(0);
+        try self.term.print(
+            "{s}{s}{s}",
+            .{ cc.bold_on, top, cc.reset_attrs },
+        );
+
+        for (1..self.stack.items.len) |i| {
             const item = self.stack.items.get(i);
-            if (i == 0) {
-                try self.term.print(
-                    "{s}{s}{s}",
-                    .{ cc.bold_on, item, cc.reset_attrs },
-                );
-            } else {
-                try self.term.print("{s}", .{item});
-            }
+            try self.term.print("{s}", .{item});
         }
     }
 };
