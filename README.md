@@ -33,7 +33,7 @@ tds -n <name>
 
 To open an existing one:
 ```
-tds -n <name>.tds.bin
+tds -n <name>.tds.txt
 ```
 
 ## Usage
