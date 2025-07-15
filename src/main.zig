@@ -12,8 +12,8 @@ const cc = term.cc;
 const Term = term.Term;
 
 const max_stack_len = 64;
-const max_item_len = 64;
-const mmap_size = max_stack_len * max_item_len;
+const max_item_len = 256; // SMS size!
+const mmap_size = 512 * 4096; // huge page size, about 2mb
 const file_ext = "tds.txt";
 
 const buf_size = struct {
