@@ -113,7 +113,14 @@ pub const Term = struct {
     }
 
     pub fn readString(buf: []u8) !usize {
-        const input = try io.getStdIn().reader().readUntilDelimiter(buf, '\n');
+        const reader = io.getStdIn().reader();
+        const input = reader.readUntilDelimiter(buf, '\n') catch |err| {
+            // TODO: if I don't do this, it won't print the error if it
+            // overshoots the buffer.
+            // I have no idea why.
+            reader.skipUntilDelimiterOrEof('\n') catch unreachable;
+            return err;
+        };
         return mem.trim(u8, input, " \t\r\n").len;
     }
 };

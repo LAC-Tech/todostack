@@ -12,7 +12,8 @@ const cc = term.cc;
 const Term = term.Term;
 
 const max_stack_len = 64;
-const max_item_len = 256; // SMS size!
+//const max_item_len = 256; // SMS size!
+const max_item_len = 2; // SMS size!
 const mmap_size = 512 * 4096; // huge page size, about 2mb
 const file_ext = "tds.txt";
 
@@ -105,8 +106,8 @@ const App = struct {
                 .{ cc.fg_red, self.err_buf, cc.reset_attrs, cc.cursor.home },
             );
             try self.term.refresh();
-
             @memset(&self.err_buf, 0);
+
             self.handleInput() catch |err| {
                 switch (err) {
                     error.quit => return,
@@ -119,7 +120,7 @@ const App = struct {
     }
 
     fn handleInput(self: *App) !void {
-        return switch (try self.term.readByte()) {
+        return switch (try Term.readByte()) {
             'q' => error.quit,
             's' => try self.stack.swap(),
             'd' => try self.stack.drop(),
@@ -150,7 +151,7 @@ const App = struct {
             self.term.refresh() catch unreachable;
         }
 
-        const end = try self.term.readString(&self.input_buf);
+        const end = try Term.readString(&self.input_buf);
         self.input_buf[end] = '\n';
         return self.input_buf[0 .. end + 1];
     }
@@ -183,7 +184,7 @@ const Stack = struct {
 
     fn push(self: *Stack, item: []const u8) !void {
         if (self.items.len >= max_stack_len) return error.StackOverflow;
-        if (item.len >= max_item_len) return error.ItemTooLong;
+        if (item.len > max_item_len) return error.ItemTooLong;
         try self.items.push(item);
         try self.items.sync();
     }
