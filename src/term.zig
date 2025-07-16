@@ -28,7 +28,6 @@ const mem = std.mem;
 const posix = std.posix;
 
 pub const Term = struct {
-    reader: io.Reader(fs.File, posix.ReadError, fs.File.read),
     writer: io.BufferedWriter(4096, io.Writer(
         fs.File,
         posix.WriteError,
@@ -48,7 +47,6 @@ pub const Term = struct {
         }
 
         return .{
-            .reader = io.getStdIn().reader(),
             .writer = io.bufferedWriter(io.getStdOut().writer()),
             .termios = .{ .original = term, .tui = term },
             .ws = ws,
@@ -110,18 +108,12 @@ pub const Term = struct {
         try w.print(cc.cursor.set_pos_fmt_str, .{ pos.row, pos.col });
     }
 
-    pub fn readByte(self: Term) !u8 {
-        return self.reader.readByte();
+    pub fn readByte() !u8 {
+        return io.getStdIn().reader().readByte();
     }
 
-    pub fn readString(self: Term, buf: []u8) !usize {
-        @memset(buf, 0);
-        const input = self.reader.readUntilDelimiter(buf, '\n') catch |err| {
-            // Reset reader state on any error
-            self.reader.skipUntilDelimiterOrEof('\n') catch unreachable;
-            return err;
-        };
-
+    pub fn readString(buf: []u8) !usize {
+        const input = try io.getStdIn().reader().readUntilDelimiter(buf, '\n');
         return mem.trim(u8, input, " \t\r\n").len;
     }
 };
