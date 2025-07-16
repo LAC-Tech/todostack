@@ -27,8 +27,6 @@ const io = std.io;
 const mem = std.mem;
 const posix = std.posix;
 
-const CursorPos = struct { row: u16, col: u16 };
-
 pub const Term = struct {
     reader: io.Reader(fs.File, posix.ReadError, fs.File.read),
     writer: io.BufferedWriter(4096, io.Writer(
@@ -168,4 +166,24 @@ pub const cc = struct {
             return fmt.comptimePrint(set_pos_fmt_str, .{ pos.row, pos.col });
         }
     };
+
+    pub const region = struct {
+        // Reset to full screen scrolling
+        pub const reset = "\x1B[r";
+
+        // Reverse line feed (scroll down when at top margin)
+        pub const reverse_lf = "\x1BM";
+
+        // Normal line feed (scroll up when at bottom margin)
+        pub const normal_lf = "\x1B[1E";
+
+        const set_region_fmt_str = "\x1B[{d};{d}r";
+
+        pub fn set(r: Region) []const u8 {
+            return fmt.comptimePrint(set_region_fmt_str, .{ r.top, r.bottom });
+        }
+    };
 };
+
+const CursorPos = struct { row: u16, col: u16 };
+const Region = struct { top: u16, bottom: u16 };
