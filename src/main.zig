@@ -12,8 +12,7 @@ const cc = term.cc;
 const Term = term.Term;
 
 const max_stack_len = 64;
-//const max_item_len = 256; // SMS size!
-const max_item_len = 2; // SMS size!
+const max_item_len = 256; // SMS size!
 const mmap_size = 512 * 4096; // huge page size, about 2mb
 const file_ext = "tds.txt";
 
@@ -184,7 +183,6 @@ const Stack = struct {
 
     fn push(self: *Stack, item: []const u8) !void {
         if (self.items.len >= max_stack_len) return error.StackOverflow;
-        if (item.len > max_item_len) return error.ItemTooLong;
         try self.items.push(item);
         try self.items.sync();
     }
