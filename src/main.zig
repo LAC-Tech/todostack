@@ -24,55 +24,43 @@ const buf_size = struct {
 
 pub fn main() !void {
     var filename_buf = [_]u8{0} ** buf_size.filename;
-    const args = parseArgs() catch {
-        printUsage();
-        return;
-    };
-    const fd = try openFile(args.filename, args.create, &filename_buf);
-
-    var stack = try Stack.init(fd);
-    var app = try App.init(&stack);
-    try app.mainLoop();
-
-    defer {
-        posix.close(fd);
-        defer app.deinit();
-    }
-}
-
-fn parseArgs() !struct { filename: []const u8, create: bool } {
     var args = process.args();
     _ = args.skip();
-    const arg1 = args.next() orelse return error.MissingFilename;
-    if (mem.eql(u8, arg1, "-n")) {
-        const name = args.next() orelse return error.MissingName;
-        return .{ .filename = name, .create = true };
-    }
-    return .{ .filename = arg1, .create = false };
-}
 
-fn openFile(name: []const u8, create: bool, buf: []u8) !posix.fd_t {
-    const filename = if (create) try fmt.bufPrint(
-        buf,
-        "{s}.{s}",
-        .{ name, file_ext },
-    ) else name;
+    const arg1 = args.next() orelse {
+        debug.print("Usage:\n", .{});
+        debug.print("\ttds <file.{s}>\t- Open existing file\n", .{file_ext});
+        debug.print("\ttds -n <name>\t\t- Create new file <name>.{s}\n", .{file_ext});
+        return;
+    };
+
+    const create = mem.eql(u8, arg1, "-n");
+    const name = if (create) args.next() orelse {
+        debug.print("Error: Missing name after -n\n", .{});
+        return;
+    } else arg1;
+
+    const filename = if (create)
+        try fmt.bufPrint(&filename_buf, "{s}.{s}", .{ name, file_ext })
+    else
+        name;
 
     const fd = try posix.open(
         filename,
-        .{ .ACCMODE = .RDWR, .CREAT = create, .EXCL = true },
+        .{ .ACCMODE = .RDWR, .CREAT = create, .EXCL = create },
         0o666,
     );
     if (create) {
         try posix.fsync(fd);
     }
-    return fd;
-}
 
-fn printUsage() void {
-    debug.print("Usage:\n", .{});
-    debug.print("\ttds <file.{s}>\t- Open existing file\n", .{file_ext});
-    debug.print("\ttds -n <name>\t\t- Create new file <name>.{s}\n", .{file_ext});
+    defer posix.close(fd);
+
+    var stack = try Stack.init(fd);
+    var app = try App.init(&stack);
+    defer app.deinit();
+
+    try app.mainLoop();
 }
 
 const App = struct {
