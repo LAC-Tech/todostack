@@ -28,13 +28,10 @@ const mem = std.mem;
 const posix = std.posix;
 
 pub const Term = struct {
-    writer: io.BufferedWriter(4096, io.Writer(
-        fs.File,
-        posix.WriteError,
-        fs.File.write,
-    )),
+    writer: fs.File.Writer,
     termios: struct { original: posix.termios, tui: posix.termios },
     ws: posix.winsize,
+    buffer: [4096]u8,
 
     pub fn init() !Term {
         var ws: posix.winsize = undefined;
@@ -42,26 +39,29 @@ pub const Term = struct {
         debug.assert(rc == 0);
 
         var term: posix.termios = undefined;
-        if (posix.system.tcgetattr(io.getStdIn().handle, &term) != 0) {
+        if (posix.system.tcgetattr(posix.STDIN_FILENO, &term) != 0) {
             return error.TcgetattrFailed;
         }
 
+        const stdout = fs.File{ .handle = posix.STDOUT_FILENO };
+        var buffer = [_]u8{0} ** 4096;
         return .{
-            .writer = io.bufferedWriter(io.getStdOut().writer()),
+            .writer = stdout.writer(&buffer),
             .termios = .{ .original = term, .tui = term },
             .ws = ws,
+            .buffer = buffer,
         };
     }
 
     /// Resets the terminal state to what it was before
     pub fn deinit(self: *Term) void {
         const rc = posix.system.tcsetattr(
-            io.getStdIn().handle,
+            posix.STDIN_FILENO,
             .NOW,
             &self.termios.original,
         );
         debug.assert(rc == 0);
-        _ = self.writer.write(
+        _ = self.writer.interface.write(
             cc.clear ++ cc.cursor.home,
         ) catch unreachable;
     }
@@ -72,19 +72,18 @@ pub const Term = struct {
         comptime format: []const u8,
         args: anytype,
     ) !void {
-        var w = self.writer.writer();
-        try w.print(format, args);
+        try self.writer.interface.print(format, args);
     }
 
     pub fn refresh(self: *Term) !void {
-        try self.writer.flush();
+        try self.writer.interface.flush();
     }
 
     pub fn rawMode(self: *Term, enabled: bool) !void {
         var term = self.termios.tui;
         term.lflag.ICANON = !enabled;
         term.lflag.ECHO = !enabled;
-        if (posix.system.tcsetattr(io.getStdIn().handle, .NOW, &term) != 0) {
+        if (posix.system.tcsetattr(posix.STDIN_FILENO, .NOW, &term) != 0) {
             return error.TcsetattrFailed;
         }
     }
@@ -98,7 +97,7 @@ pub const Term = struct {
             }
             break :blk result;
         };
-        _ = try self.writer.write(combined);
+        _ = try self.writer.interface.write(combined);
     }
 
     /// For runtime known cursor positons
@@ -109,19 +108,21 @@ pub const Term = struct {
     }
 
     pub fn readByte() !u8 {
-        return io.getStdIn().reader().readByte();
+        var byte: u8 = undefined;
+        const n = try posix.read(posix.STDIN_FILENO, (&byte)[0..1]);
+        if (n == 0) return error.EndOfStream;
+        return byte;
     }
 
     pub fn readString(buf: []u8) !usize {
-        const reader = io.getStdIn().reader();
-        const input = reader.readUntilDelimiter(buf, '\n') catch |err| {
-            // TODO: if I don't do this, it won't print the error if it
-            // overshoots the buffer.
-            // I have no idea why.
-            reader.skipUntilDelimiterOrEof('\n') catch unreachable;
-            return err;
-        };
-        return mem.trim(u8, input, " \t\r\n").len;
+        var i: usize = 0;
+        while (i < buf.len) {
+            const byte = try readByte();
+            if (byte == '\n' or byte == '\r') break;
+            buf[i] = byte;
+            i += 1;
+        }
+        return i;
     }
 };
 
