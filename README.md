@@ -6,9 +6,10 @@ It's not really a replacement for a todo list. This is specifically for remember
 
 ## Implementation
 
-It uses a memory mapped file of max 64 stack items, up to max 64 bytes long. The file is all zeroed out apart from the TODO items, so should be diffable in version control.
+TDS is a TUI program.
 
-It operates as a TUI program.
+It memory maps the file - a new line separated plain text file with the extension .tds.txt.
+Each stack operating writes the changes to disk.
 
 ## Requirements
 
