@@ -30,7 +30,10 @@ pub fn main() !void {
     const arg1 = args.next() orelse {
         debug.print("Usage:\n", .{});
         debug.print("\ttds <file.{s}>\t- Open existing file\n", .{file_ext});
-        debug.print("\ttds -n <name>\t\t- Create new file <name>.{s}\n", .{file_ext});
+        debug.print(
+            "\ttds -n <name>\t\t- Create new file <name>.{s}\n",
+            .{file_ext},
+        );
         return;
     };
 
