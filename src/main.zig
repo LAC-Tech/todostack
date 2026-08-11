@@ -3,8 +3,8 @@ const debug = std.debug;
 const fmt = std.fmt;
 const fs = std.fs;
 const io = std.io;
+const linux = std.os.linux;
 const mem = std.mem;
-const posix = std.posix;
 const process = std.process;
 
 const term = @import("./term.zig");
@@ -22,9 +22,16 @@ const buf_size = struct {
     const filename = 512; // Daniel's Constant
 };
 
-pub fn main() !void {
+fn check(rc: usize) !usize {
+    return switch (linux.errno(rc)) {
+        .SUCCESS => rc,
+        else => error.SyscallFailed,
+    };
+}
+
+pub fn main(init: process.Init) !void {
     var filename_buf = [_]u8{0} ** buf_size.filename;
-    var args = process.args();
+    var args = init.minimal.args.iterate();
     _ = args.skip();
 
     const arg1 = args.next() orelse {
@@ -43,21 +50,27 @@ pub fn main() !void {
         return;
     } else arg1;
 
-    const filename = if (create)
-        try fmt.bufPrint(&filename_buf, "{s}.{s}", .{ name, file_ext })
-    else
-        name;
+    const filename_len = if (create) blk: {
+        const len = (try fmt.bufPrint(&filename_buf, "{s}.{s}", .{ name, file_ext })).len;
+        if (len >= buf_size.filename) return error.NameTooLong;
+        break :blk len;
+    } else blk: {
+        if (name.len >= buf_size.filename) return error.NameTooLong;
+        @memcpy(filename_buf[0..name.len], name);
+        break :blk name.len;
+    };
+    const filename: [*:0]const u8 = @ptrCast(filename_buf[0 .. filename_len + 1].ptr);
 
-    const fd = try posix.open(
+    const fd: linux.fd_t = @intCast(try check(linux.open(
         filename,
         .{ .ACCMODE = .RDWR, .CREAT = create, .EXCL = create },
         0o666,
-    );
+    )));
     if (create) {
-        try posix.fsync(fd);
+        _ = try check(linux.fsync(fd));
     }
 
-    defer posix.close(fd);
+    defer _ = linux.close(fd);
 
     var stack = try Stack.init(fd);
     var app = try App.init(&stack);
@@ -168,7 +181,7 @@ const Stack = struct {
     temp_b: [max_item_len]u8 = .{0} ** max_item_len,
     temp_c: [max_item_len]u8 = .{0} ** max_item_len,
 
-    fn init(fd: posix.fd_t) !Stack {
+    fn init(fd: linux.fd_t) !Stack {
         return .{ .items = try Items.init(fd) };
     }
 
@@ -221,28 +234,29 @@ const Stack = struct {
 const Items = struct {
     const max_offsets = max_stack_len + 1;
 
-    fd: posix.fd_t,
+    fd: linux.fd_t,
     bytes: []u8,
     offsets: [max_offsets]u16,
     len: u8,
 
-    fn init(fd: posix.fd_t) !Items {
-        const bytes = try posix.mmap(
+    fn init(fd: linux.fd_t) !Items {
+        const rc = try check(linux.mmap(
             null,
             mmap_size,
-            posix.PROT.READ | posix.PROT.WRITE,
+            .{ .READ = true, .WRITE = true },
             .{ .TYPE = .SHARED },
             fd,
             0,
-        );
-        debug.assert(bytes.len == mmap_size);
+        ));
+        const bytes: []u8 = @as([*]u8, @ptrFromInt(rc))[0..mmap_size];
 
-        const stat = try posix.fstat(fd);
+        var st: linux.Statx = undefined;
+        _ = try check(linux.statx(fd, "", linux.AT.EMPTY_PATH, .{ .SIZE = true }, &st));
 
         var offsets = [_]u16{0} ** max_offsets;
         var len: u8 = 0;
 
-        for (bytes[0..@intCast(stat.size)], 0..) |byte, i| {
+        for (bytes[0..@intCast(st.size)], 0..) |byte, i| {
             if (byte == '\n') {
                 len += 1;
                 offsets[len] = @intCast(i + 1);
@@ -255,7 +269,7 @@ const Items = struct {
     fn push(self: *Items, item: []const u8) !void {
         const offset = self.offsets[self.len];
         const bytes_written: u16 = @intCast(
-            try posix.pwrite(self.fd, item, offset),
+            try check(linux.pwrite(self.fd, item.ptr, item.len, offset)),
         );
         self.len += 1;
         self.offsets[self.len] = offset + bytes_written;
@@ -263,7 +277,7 @@ const Items = struct {
 
     fn drop(self: *Items) !void {
         self.len -= 1;
-        try posix.ftruncate(self.fd, self.offsets[self.len]);
+        _ = try check(linux.ftruncate(self.fd, self.offsets[self.len]));
     }
 
     fn get(self: *Items, idx: usize) []u8 {
@@ -289,6 +303,6 @@ const Items = struct {
     }
 
     fn sync(self: *Items) !void {
-        try posix.msync(@ptrCast(@alignCast(self.bytes)), posix.MSF.SYNC);
+        _ = try check(linux.msync(self.bytes.ptr, self.bytes.len, linux.MSF.SYNC));
     }
 };

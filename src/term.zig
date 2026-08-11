@@ -20,50 +20,48 @@
 
 const std = @import("std");
 
-const debug = std.debug;
 const fmt = std.fmt;
-const fs = std.fs;
-const io = std.io;
-const mem = std.mem;
-const posix = std.posix;
+const linux = std.os.linux;
+
+const winsize = extern struct {
+    row: u16,
+    col: u16,
+    xpixel: u16,
+    ypixel: u16,
+};
+
+fn check(rc: usize) !usize {
+    return switch (linux.errno(rc)) {
+        .SUCCESS => rc,
+        else => error.SyscallFailed,
+    };
+}
 
 pub const Term = struct {
-    writer: fs.File.Writer,
-    termios: struct { original: posix.termios, tui: posix.termios },
-    ws: posix.winsize,
-    buffer: [4096]u8,
+    termios: struct { original: linux.termios, tui: linux.termios },
+    ws: winsize,
 
     pub fn init() !Term {
-        var ws: posix.winsize = undefined;
-        const rc = posix.system.ioctl(1, posix.T.IOCGWINSZ, @intFromPtr(&ws));
-        debug.assert(rc == 0);
+        var ws: winsize = undefined;
+        _ = try check(linux.ioctl(linux.STDOUT_FILENO, linux.T.IOCGWINSZ, @intFromPtr(&ws)));
 
-        var term: posix.termios = undefined;
-        if (posix.system.tcgetattr(posix.STDIN_FILENO, &term) != 0) {
-            return error.TcgetattrFailed;
-        }
+        var term: linux.termios = undefined;
+        _ = try check(linux.tcgetattr(linux.STDIN_FILENO, &term));
 
-        const stdout = fs.File{ .handle = posix.STDOUT_FILENO };
-        var buffer = [_]u8{0} ** 4096;
         return .{
-            .writer = stdout.writer(&buffer),
             .termios = .{ .original = term, .tui = term },
             .ws = ws,
-            .buffer = buffer,
         };
     }
 
     /// Resets the terminal state to what it was before
     pub fn deinit(self: *Term) void {
-        const rc = posix.system.tcsetattr(
-            posix.STDIN_FILENO,
+        _ = linux.tcsetattr(
+            linux.STDIN_FILENO,
             .NOW,
             &self.termios.original,
         );
-        debug.assert(rc == 0);
-        _ = self.writer.interface.write(
-            cc.clear ++ cc.cursor.home,
-        ) catch unreachable;
+        self.write(&.{ cc.clear, cc.cursor.home }) catch unreachable;
     }
 
     /// For runtime known values
@@ -72,20 +70,18 @@ pub const Term = struct {
         comptime format: []const u8,
         args: anytype,
     ) !void {
-        try self.writer.interface.print(format, args);
+        var buf: [4096]u8 = undefined;
+        const out = try fmt.bufPrint(&buf, format, args);
+        try self.writeRaw(out);
     }
 
-    pub fn refresh(self: *Term) !void {
-        try self.writer.interface.flush();
-    }
+    pub fn refresh(_: *Term) !void {}
 
     pub fn rawMode(self: *Term, enabled: bool) !void {
         var term = self.termios.tui;
         term.lflag.ICANON = !enabled;
         term.lflag.ECHO = !enabled;
-        if (posix.system.tcsetattr(posix.STDIN_FILENO, .NOW, &term) != 0) {
-            return error.TcsetattrFailed;
-        }
+        _ = try check(linux.tcsetattr(linux.STDIN_FILENO, .NOW, &term));
     }
 
     /// For comptime known values
@@ -97,19 +93,27 @@ pub const Term = struct {
             }
             break :blk result;
         };
-        _ = try self.writer.interface.write(combined);
+        try self.writeRaw(combined);
     }
 
     /// For runtime known cursor positons
     /// For comptime known, use cc.curosr.setPos
     pub fn setCursorPos(self: *Term, pos: CursorPos) !void {
-        const w = self.writer.writer();
-        try w.print(cc.cursor.set_pos_fmt_str, .{ pos.row, pos.col });
+        var buf: [32]u8 = undefined;
+        const out = try fmt.bufPrint(&buf, cc.cursor.set_pos_fmt_str, .{ pos.row, pos.col });
+        try self.writeRaw(out);
+    }
+
+    fn writeRaw(_: *Term, bytes: []const u8) !void {
+        var off: usize = 0;
+        while (off < bytes.len) {
+            off += try check(linux.write(linux.STDOUT_FILENO, bytes[off..].ptr, bytes.len - off));
+        }
     }
 
     pub fn readByte() !u8 {
         var byte: u8 = undefined;
-        const n = try posix.read(posix.STDIN_FILENO, (&byte)[0..1]);
+        const n = try check(linux.read(linux.STDIN_FILENO, (&byte)[0..1], 1));
         if (n == 0) return error.EndOfStream;
         return byte;
     }
