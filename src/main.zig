@@ -22,9 +22,9 @@ const buf_size = struct {
     const filename = 512; // Daniel's Constant
 };
 
-pub fn main() !void {
+pub fn main(init: process.Init) !void {
     var filename_buf = [_]u8{0} ** buf_size.filename;
-    var args = process.args();
+    var args = init.minimal.args.iterate();
     _ = args.skip();
 
     const arg1 = args.next() orelse {
