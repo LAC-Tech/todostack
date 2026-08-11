@@ -1,11 +1,12 @@
 const std = @import("std");
 const debug = std.debug;
 const fmt = std.fmt;
-const fs = std.fs;
-const io = std.io;
 const mem = std.mem;
-const posix = std.posix;
 const process = std.process;
+
+const Io = std.Io;
+const Dir = Io.Dir;
+const File = Io.File;
 
 const term = @import("./term.zig");
 const cc = term.cc;
@@ -23,6 +24,8 @@ const buf_size = struct {
 };
 
 pub fn main(init: process.Init) !void {
+    const io = init.io;
+
     var filename_buf = [_]u8{0} ** buf_size.filename;
     var args = init.minimal.args.iterate();
     _ = args.skip();
@@ -48,19 +51,20 @@ pub fn main(init: process.Init) !void {
     else
         name;
 
-    const fd = try posix.open(
-        filename,
-        .{ .ACCMODE = .RDWR, .CREAT = create, .EXCL = create },
-        0o666,
-    );
+    const file = if (create)
+        try Dir.createFile(.cwd(), io, filename, .{ .exclusive = true, .read = true })
+    else
+        try Dir.openFile(.cwd(), io, filename, .{ .mode = .read_write });
     if (create) {
-        try posix.fsync(fd);
+        try File.sync(file, io);
     }
 
-    defer posix.close(fd);
+    defer file.close(io);
 
-    var stack = try Stack.init(fd);
-    var app = try App.init(&stack);
+    var stack = try Stack.init(io, file);
+    defer stack.deinit();
+
+    var app = try App.init(io, &stack);
     defer app.deinit();
 
     try app.mainLoop();
@@ -72,8 +76,8 @@ const App = struct {
     err_buf: [buf_size.err]u8 = .{0} ** buf_size.err,
     term: Term,
 
-    fn init(stack: *Stack) !App {
-        var tui = try Term.init();
+    fn init(io: Io, stack: *Stack) !App {
+        var tui = try Term.init(io);
         try tui.rawMode(true);
         try tui.write(&.{ cc.clear, cc.cursor.hide });
         try tui.refresh();
@@ -110,7 +114,7 @@ const App = struct {
     }
 
     fn handleInput(self: *App) !void {
-        return switch (try Term.readByte()) {
+        return switch (try self.term.readByte()) {
             'q' => error.quit,
             's' => try self.stack.swap(),
             'd' => try self.stack.drop(),
@@ -141,7 +145,7 @@ const App = struct {
             self.term.refresh() catch unreachable;
         }
 
-        const end = try Term.readString(&self.input_buf);
+        const end = try self.term.readString(&self.input_buf);
         self.input_buf[end] = '\n';
         return self.input_buf[0 .. end + 1];
     }
@@ -164,12 +168,17 @@ const App = struct {
 
 const Stack = struct {
     items: Items,
+    io: Io,
     temp_a: [max_item_len]u8 = .{0} ** max_item_len,
     temp_b: [max_item_len]u8 = .{0} ** max_item_len,
     temp_c: [max_item_len]u8 = .{0} ** max_item_len,
 
-    fn init(fd: posix.fd_t) !Stack {
-        return .{ .items = try Items.init(fd) };
+    fn init(io: Io, file: File) !Stack {
+        return .{ .items = try Items.init(io, file), .io = io };
+    }
+
+    fn deinit(self: *Stack) void {
+        self.items.deinit();
     }
 
     fn push(self: *Stack, item: []const u8) !void {
@@ -221,41 +230,39 @@ const Stack = struct {
 const Items = struct {
     const max_offsets = max_stack_len + 1;
 
-    fd: posix.fd_t,
-    bytes: []u8,
+    file: File,
+    io: Io,
+    mm: File.MemoryMap,
     offsets: [max_offsets]u16,
     len: u8,
 
-    fn init(fd: posix.fd_t) !Items {
-        const bytes = try posix.mmap(
-            null,
-            mmap_size,
-            posix.PROT.READ | posix.PROT.WRITE,
-            .{ .TYPE = .SHARED },
-            fd,
-            0,
-        );
-        debug.assert(bytes.len == mmap_size);
+    fn init(io: Io, file: File) !Items {
+        const mm = try File.createMemoryMap(file, io, .{ .len = mmap_size });
+        debug.assert(mm.memory.len == mmap_size);
 
-        const stat = try posix.fstat(fd);
+        const stat = try File.stat(file, io);
 
         var offsets = [_]u16{0} ** max_offsets;
         var len: u8 = 0;
 
-        for (bytes[0..@intCast(stat.size)], 0..) |byte, i| {
+        for (mm.memory[0..@intCast(stat.size)], 0..) |byte, i| {
             if (byte == '\n') {
                 len += 1;
                 offsets[len] = @intCast(i + 1);
             }
         }
 
-        return .{ .fd = fd, .bytes = bytes, .offsets = offsets, .len = len };
+        return .{ .file = file, .io = io, .mm = mm, .offsets = offsets, .len = len };
+    }
+
+    fn deinit(self: *Items) void {
+        self.mm.destroy(self.io);
     }
 
     fn push(self: *Items, item: []const u8) !void {
         const offset = self.offsets[self.len];
         const bytes_written: u16 = @intCast(
-            try posix.pwrite(self.fd, item, offset),
+            try File.writePositional(self.file, self.io, &.{item}, offset),
         );
         self.len += 1;
         self.offsets[self.len] = offset + bytes_written;
@@ -263,7 +270,7 @@ const Items = struct {
 
     fn drop(self: *Items) !void {
         self.len -= 1;
-        try posix.ftruncate(self.fd, self.offsets[self.len]);
+        try File.setLength(self.file, self.io, self.offsets[self.len]);
     }
 
     fn get(self: *Items, idx: usize) []u8 {
@@ -271,7 +278,7 @@ const Items = struct {
         const start = self.offsets[offset_idx];
         const end = self.offsets[offset_idx + 1];
 
-        return self.bytes[start..end];
+        return self.mm.memory[start..end];
     }
 
     fn set(self: *Items, items: []const []const u8) void {
@@ -279,7 +286,7 @@ const Items = struct {
             const end = self.offsets[self.len - idx];
             const start = end - item.len;
 
-            @memcpy(self.bytes[start..end], item);
+            @memcpy(self.mm.memory[start..end], item);
             self.offsets[self.len - 1 - idx] = @intCast(start);
         }
     }
@@ -289,6 +296,6 @@ const Items = struct {
     }
 
     fn sync(self: *Items) !void {
-        try posix.msync(@ptrCast(@alignCast(self.bytes)), posix.MSF.SYNC);
+        try self.mm.write(self.io);
     }
 };

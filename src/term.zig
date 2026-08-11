@@ -22,18 +22,19 @@ const std = @import("std");
 
 const debug = std.debug;
 const fmt = std.fmt;
-const fs = std.fs;
-const io = std.io;
-const mem = std.mem;
 const posix = std.posix;
 
+const Io = std.Io;
+const File = Io.File;
+
 pub const Term = struct {
-    writer: fs.File.Writer,
+    writer: File.Writer,
+    io: Io,
     termios: struct { original: posix.termios, tui: posix.termios },
     ws: posix.winsize,
     buffer: [4096]u8,
 
-    pub fn init() !Term {
+    pub fn init(io: Io) !Term {
         var ws: posix.winsize = undefined;
         const rc = posix.system.ioctl(1, posix.T.IOCGWINSZ, @intFromPtr(&ws));
         debug.assert(rc == 0);
@@ -43,10 +44,11 @@ pub const Term = struct {
             return error.TcgetattrFailed;
         }
 
-        const stdout = fs.File{ .handle = posix.STDOUT_FILENO };
+        const stdout = File.stdout();
         var buffer = [_]u8{0} ** 4096;
         return .{
-            .writer = stdout.writer(&buffer),
+            .writer = stdout.writerStreaming(io, &buffer),
+            .io = io,
             .termios = .{ .original = term, .tui = term },
             .ws = ws,
             .buffer = buffer,
@@ -103,21 +105,20 @@ pub const Term = struct {
     /// For runtime known cursor positons
     /// For comptime known, use cc.curosr.setPos
     pub fn setCursorPos(self: *Term, pos: CursorPos) !void {
-        const w = self.writer.writer();
-        try w.print(cc.cursor.set_pos_fmt_str, .{ pos.row, pos.col });
+        try self.writer.interface.print(cc.cursor.set_pos_fmt_str, .{ pos.row, pos.col });
     }
 
-    pub fn readByte() !u8 {
+    pub fn readByte(self: *Term) !u8 {
         var byte: u8 = undefined;
-        const n = try posix.read(posix.STDIN_FILENO, (&byte)[0..1]);
+        const n = try File.stdin().readStreaming(self.io, &.{(&byte)[0..1]});
         if (n == 0) return error.EndOfStream;
         return byte;
     }
 
-    pub fn readString(buf: []u8) !usize {
+    pub fn readString(self: *Term, buf: []u8) !usize {
         var i: usize = 0;
         while (i < buf.len) {
-            const byte = try readByte();
+            const byte = try self.readByte();
             if (byte == '\n' or byte == '\r') break;
             buf[i] = byte;
             i += 1;
