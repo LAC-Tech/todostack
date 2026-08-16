@@ -8,9 +8,7 @@ const Io = std.Io;
 const Dir = Io.Dir;
 const File = Io.File;
 
-const term = @import("./term.zig");
-const cc = term.cc;
-const Term = term.Term;
+const Term = @import("./term.zig");
 
 const max_stack_len = 64;
 const max_item_len = 256; // SMS size!
@@ -41,63 +39,67 @@ pub fn main(init: process.Init) !void {
     };
 
     const create = mem.eql(u8, arg1, "-n");
-    const name = if (create) args.next() orelse {
-        debug.print("Error: Missing name after -n\n", .{});
-        return;
-    } else arg1;
 
-    const filename = if (create)
-        try fmt.bufPrint(&filename_buf, "{s}.{s}", .{ name, file_ext })
-    else
-        name;
+    const file = if (create) blk: {
+        const name = args.next() orelse {
+            debug.print("Error: Missing name after -n\n", .{});
+            return;
+        };
 
-    const file = if (create)
-        try Dir.createFile(.cwd(), io, filename, .{ .exclusive = true, .read = true })
-    else
-        try Dir.openFile(.cwd(), io, filename, .{ .mode = .read_write });
-    if (create) {
-        try File.sync(file, io);
-    }
+        const filename =
+            try fmt.bufPrint(&filename_buf, "{s}.{s}", .{ name, file_ext });
+
+        const f = try Dir.createFile(.cwd(), io, filename, .{
+            .exclusive = true,
+            .read = true,
+        });
+
+        try File.sync(f, io);
+        break :blk f;
+    } else try Dir.openFile(.cwd(), io, arg1, .{ .mode = .read_write });
 
     defer file.close(io);
 
-    var stack = try Stack.init(io, file);
-    defer stack.deinit();
-
-    var app = try App.init(io, &stack);
+    var app = try App.init(io, file);
     defer app.deinit();
 
     try app.mainLoop();
 }
 
 const App = struct {
-    stack: *Stack,
+    stack: Stack,
     input_buf: [buf_size.input]u8 = .{0} ** buf_size.input,
     err_buf: [buf_size.err]u8 = .{0} ** buf_size.err,
     term: Term,
 
-    fn init(io: Io, stack: *Stack) !App {
-        var tui = try Term.init(io);
-        try tui.rawMode(true);
-        try tui.write(&.{ cc.clear, cc.cursor.hide });
-        try tui.refresh();
+    fn init(io: Io, file: File) !App {
+        var t = try Term.init(io);
+        try t.rawMode(true);
+        try t.write(&.{ Term.cc.clear, Term.cc.cursor.hide });
+        try t.refresh();
 
-        return .{ .stack = stack, .term = tui };
+        return .{ .stack = try Stack.init(io, file), .term = t };
     }
 
     fn deinit(self: *App) void {
-        self.term.write(&.{cc.clear}) catch unreachable;
+        self.term.write(&.{Term.cc.clear}) catch unreachable;
         self.term.refresh() catch unreachable;
         self.term.deinit();
+        self.stack.deinit();
     }
 
     fn mainLoop(self: *App) !void {
         while (true) {
-            try self.term.write(&.{ cc.clear, cc.cursor.home });
+            try self.term.write(&.{ Term.cc.clear, Term.cc.cursor.home });
             try self.printStack();
             try self.term.print(
                 "{s}{s}{s}{s}",
-                .{ cc.fg_red, self.err_buf, cc.reset_attrs, cc.cursor.home },
+                .{
+                    Term.cc.fg_red,
+                    self.err_buf,
+                    Term.cc.reset_attrs,
+                    Term.cc.cursor.home,
+                },
             );
             try self.term.refresh();
             @memset(&self.err_buf, 0);
@@ -131,17 +133,21 @@ const App = struct {
         @memset(&self.input_buf, 0);
 
         try self.term.write(&.{
-            cc.clear,
-            cc.cursor.setPos(.{ .row = 2, .col = 1 }),
+            Term.cc.clear,
+            Term.cc.cursor.setPos(.{ .row = 2, .col = 1 }),
         });
         try self.printStack();
-        try self.term.write(&.{ cc.cursor.home, "> ", cc.cursor.show });
+        try self.term.write(&.{
+            Term.cc.cursor.home,
+            "> ",
+            Term.cc.cursor.show,
+        });
         try self.term.rawMode(false);
         try self.term.refresh();
 
         defer {
             self.term.rawMode(true) catch unreachable;
-            self.term.write(&.{cc.cursor.hide}) catch unreachable;
+            self.term.write(&.{Term.cc.cursor.hide}) catch unreachable;
             self.term.refresh() catch unreachable;
         }
 
@@ -156,7 +162,7 @@ const App = struct {
         const top = self.stack.items.get(0);
         try self.term.print(
             "{s}{s}{s}",
-            .{ cc.bold_on, top, cc.reset_attrs },
+            .{ Term.cc.bold_on, top, Term.cc.reset_attrs },
         );
 
         for (1..self.stack.items.len) |i| {
@@ -252,7 +258,13 @@ const Items = struct {
             }
         }
 
-        return .{ .file = file, .io = io, .mm = mm, .offsets = offsets, .len = len };
+        return .{
+            .file = file,
+            .io = io,
+            .mm = mm,
+            .offsets = offsets,
+            .len = len,
+        };
     }
 
     fn deinit(self: *Items) void {

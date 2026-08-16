@@ -27,105 +27,105 @@ const posix = std.posix;
 const Io = std.Io;
 const File = Io.File;
 
-pub const Term = struct {
-    writer: File.Writer,
-    io: Io,
-    termios: struct { original: posix.termios, tui: posix.termios },
-    ws: posix.winsize,
-    buffer: [4096]u8,
+writer: File.Writer,
+io: Io,
+termios: struct { original: posix.termios, tui: posix.termios },
+ws: posix.winsize,
+buffer: [4096]u8,
 
-    pub fn init(io: Io) !Term {
-        var ws: posix.winsize = undefined;
-        const rc = posix.system.ioctl(1, posix.T.IOCGWINSZ, @intFromPtr(&ws));
-        debug.assert(rc == 0);
+const Self = @This();
 
-        var term: posix.termios = undefined;
-        if (posix.system.tcgetattr(posix.STDIN_FILENO, &term) != 0) {
-            return error.TcgetattrFailed;
+pub fn init(io: Io) !Self {
+    var ws: posix.winsize = undefined;
+    const rc = posix.system.ioctl(1, posix.T.IOCGWINSZ, @intFromPtr(&ws));
+    debug.assert(rc == 0);
+
+    var term: posix.termios = undefined;
+    if (posix.system.tcgetattr(posix.STDIN_FILENO, &term) != 0) {
+        return error.TcgetattrFailed;
+    }
+
+    const stdout = File.stdout();
+    var buffer = [_]u8{0} ** 4096;
+    return .{
+        .writer = stdout.writerStreaming(io, &buffer),
+        .io = io,
+        .termios = .{ .original = term, .tui = term },
+        .ws = ws,
+        .buffer = buffer,
+    };
+}
+
+/// Resets the terminal state to what it was before
+pub fn deinit(self: *Self) void {
+    const rc = posix.system.tcsetattr(
+        posix.STDIN_FILENO,
+        .NOW,
+        &self.termios.original,
+    );
+    debug.assert(rc == 0);
+    _ = self.writer.interface.write(
+        cc.clear ++ cc.cursor.home,
+    ) catch unreachable;
+}
+
+/// For runtime known values
+pub fn print(
+    self: *Self,
+    comptime format: []const u8,
+    args: anytype,
+) !void {
+    try self.writer.interface.print(format, args);
+}
+
+pub fn refresh(self: *Self) !void {
+    try self.writer.interface.flush();
+}
+
+pub fn rawMode(self: *Self, enabled: bool) !void {
+    var term = self.termios.tui;
+    term.lflag.ICANON = !enabled;
+    term.lflag.ECHO = !enabled;
+    if (posix.system.tcsetattr(posix.STDIN_FILENO, .NOW, &term) != 0) {
+        return error.TcsetattrFailed;
+    }
+}
+
+/// For comptime known values
+pub fn write(self: *Self, comptime codes: []const []const u8) !void {
+    const combined = comptime blk: {
+        var result: []const u8 = "";
+        for (codes) |code| {
+            result = result ++ code;
         }
+        break :blk result;
+    };
+    _ = try self.writer.interface.write(combined);
+}
 
-        const stdout = File.stdout();
-        var buffer = [_]u8{0} ** 4096;
-        return .{
-            .writer = stdout.writerStreaming(io, &buffer),
-            .io = io,
-            .termios = .{ .original = term, .tui = term },
-            .ws = ws,
-            .buffer = buffer,
-        };
-    }
+/// For runtime known cursor positons
+/// For comptime known, use cc.cursor.setPos
+pub fn setCursorPos(self: *Self, pos: CursorPos) !void {
+    try self.writer.interface.print(cc.cursor.set_pos_fmt_str, .{ pos.row, pos.col });
+}
 
-    /// Resets the terminal state to what it was before
-    pub fn deinit(self: *Term) void {
-        const rc = posix.system.tcsetattr(
-            posix.STDIN_FILENO,
-            .NOW,
-            &self.termios.original,
-        );
-        debug.assert(rc == 0);
-        _ = self.writer.interface.write(
-            cc.clear ++ cc.cursor.home,
-        ) catch unreachable;
-    }
+pub fn readByte(self: *Self) !u8 {
+    var byte: u8 = undefined;
+    const n = try File.stdin().readStreaming(self.io, &.{(&byte)[0..1]});
+    if (n == 0) return error.EndOfStream;
+    return byte;
+}
 
-    /// For runtime known values
-    pub fn print(
-        self: *Term,
-        comptime format: []const u8,
-        args: anytype,
-    ) !void {
-        try self.writer.interface.print(format, args);
+pub fn readString(self: *Self, buf: []u8) !usize {
+    var i: usize = 0;
+    while (i < buf.len) {
+        const byte = try self.readByte();
+        if (byte == '\n' or byte == '\r') break;
+        buf[i] = byte;
+        i += 1;
     }
-
-    pub fn refresh(self: *Term) !void {
-        try self.writer.interface.flush();
-    }
-
-    pub fn rawMode(self: *Term, enabled: bool) !void {
-        var term = self.termios.tui;
-        term.lflag.ICANON = !enabled;
-        term.lflag.ECHO = !enabled;
-        if (posix.system.tcsetattr(posix.STDIN_FILENO, .NOW, &term) != 0) {
-            return error.TcsetattrFailed;
-        }
-    }
-
-    /// For comptime known values
-    pub fn write(self: *Term, comptime codes: []const []const u8) !void {
-        const combined = comptime blk: {
-            var result: []const u8 = "";
-            for (codes) |code| {
-                result = result ++ code;
-            }
-            break :blk result;
-        };
-        _ = try self.writer.interface.write(combined);
-    }
-
-    /// For runtime known cursor positons
-    /// For comptime known, use cc.curosr.setPos
-    pub fn setCursorPos(self: *Term, pos: CursorPos) !void {
-        try self.writer.interface.print(cc.cursor.set_pos_fmt_str, .{ pos.row, pos.col });
-    }
-
-    pub fn readByte(self: *Term) !u8 {
-        var byte: u8 = undefined;
-        const n = try File.stdin().readStreaming(self.io, &.{(&byte)[0..1]});
-        if (n == 0) return error.EndOfStream;
-        return byte;
-    }
-
-    pub fn readString(self: *Term, buf: []u8) !usize {
-        var i: usize = 0;
-        while (i < buf.len) {
-            const byte = try self.readByte();
-            if (byte == '\n' or byte == '\r') break;
-            buf[i] = byte;
-            i += 1;
-        }
-        return i;
-    }
-};
+    return i;
+}
 
 /// ECMA-48 Control Codes
 /// These are intended to be passed into the 'write' function of Term
