@@ -74,7 +74,6 @@ const App = struct {
 
     fn init(io: Io, file: File) !App {
         var t = try Term.init(io);
-        try t.rawMode(true);
         try t.write(&.{ Term.cc.clear, Term.cc.cursor.hide });
         try t.refresh();
 

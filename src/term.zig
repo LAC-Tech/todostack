@@ -29,7 +29,7 @@ const File = Io.File;
 
 writer: File.Writer,
 io: Io,
-termios: struct { original: posix.termios, tui: posix.termios },
+termios: posix.termios,
 ws: posix.winsize,
 buffer: [4096]u8,
 
@@ -45,12 +45,14 @@ pub fn init(io: Io) !Self {
         return error.TcgetattrFailed;
     }
 
+    try rawMode(&term, true);
+
     const stdout = File.stdout();
     var buffer = [_]u8{0} ** 4096;
     return .{
         .writer = stdout.writerStreaming(io, &buffer),
         .io = io,
-        .termios = .{ .original = term, .tui = term },
+        .termios = term,
         .ws = ws,
         .buffer = buffer,
     };
@@ -58,6 +60,7 @@ pub fn init(io: Io) !Self {
 
 /// Resets the terminal state to what it was before
 pub fn deinit(self: *Self) void {
+    try rawMode(&self.termios, false);
     const rc = posix.system.tcsetattr(
         posix.STDIN_FILENO,
         .NOW,
@@ -82,11 +85,10 @@ pub fn refresh(self: *Self) !void {
     try self.writer.interface.flush();
 }
 
-pub fn rawMode(self: *Self, enabled: bool) !void {
-    var term = self.termios.tui;
-    term.lflag.ICANON = !enabled;
-    term.lflag.ECHO = !enabled;
-    if (posix.system.tcsetattr(posix.STDIN_FILENO, .NOW, &term) != 0) {
+fn rawMode(termios: *posix.termios, enabled: bool) !void {
+    termios.lflag.ICANON = !enabled;
+    termios.lflag.ECHO = !enabled;
+    if (posix.system.tcsetattr(posix.STDIN_FILENO, .NOW, termios) != 0) {
         return error.TcsetattrFailed;
     }
 }
