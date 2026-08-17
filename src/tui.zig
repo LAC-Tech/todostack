@@ -49,22 +49,28 @@ pub fn init(io: Io) !Self {
 
     const stdout = File.stdout();
     var buffer = [_]u8{0} ** 4096;
-    return .{
+    var result = Self{
         .writer = stdout.writerStreaming(io, &buffer),
         .io = io,
         .termios = term,
         .ws = ws,
         .buffer = buffer,
     };
+
+    try result.write(&.{ cc.clear, cc.cursor.hide });
+    try result.refresh();
+    return result;
 }
 
 /// Resets the terminal state to what it was before
 pub fn deinit(self: *Self) void {
-    try rawMode(&self.termios, false);
+    self.write(&.{cc.clear}) catch unreachable;
+    self.refresh() catch unreachable;
+    rawMode(&self.termios, false) catch unreachable;
     const rc = posix.system.tcsetattr(
         posix.STDIN_FILENO,
         .NOW,
-        &self.termios.original,
+        &self.termios,
     );
     debug.assert(rc == 0);
     _ = self.writer.interface.write(
@@ -84,6 +90,52 @@ pub fn print(
 pub fn refresh(self: *Self) !void {
     try self.writer.interface.flush();
 }
+
+// BEGIN TEMP FUNCTIONS
+
+pub fn clearHome(self: *Self) !void {
+    try self.write(&.{ cc.clear, cc.cursor.home });
+}
+
+pub fn printBold(self: *Self, s: []const u8) !void {
+    try self.print(
+        "{s}{s}{s}",
+        .{ cc.bold_on, s, cc.reset_attrs },
+    );
+}
+
+pub fn printRedCursorHome(self: *Self, s: []const u8) !void {
+    try self.print(
+        "{s}{s}{s}{s}",
+        .{ cc.fg_red, s, cc.reset_attrs, cc.cursor.home },
+    );
+}
+
+pub fn clearSetPos(self: *Self, comptime pos: CursorPos) !void {
+    try self.write(&.{ cc.clear, cc.cursor.setPos(pos) });
+}
+
+pub fn getLine(self: *Self, input_buf: []u8) ![]const u8 {
+    try self.write(&.{
+        cc.cursor.home,
+        "> ",
+        cc.cursor.show,
+    });
+    try rawMode(&self.termios, false);
+    try self.refresh();
+
+    defer {
+        rawMode(&self.termios, true) catch unreachable;
+        self.write(&.{cc.cursor.hide}) catch unreachable;
+        self.refresh() catch unreachable;
+    }
+
+    const end = try self.readString(input_buf);
+    input_buf[end] = '\n';
+    return input_buf[0 .. end + 1];
+}
+
+// END TEMP FUNCTIONS
 
 fn rawMode(termios: *posix.termios, enabled: bool) !void {
     termios.lflag.ICANON = !enabled;
@@ -118,7 +170,7 @@ pub fn readByte(self: *Self) !u8 {
     return byte;
 }
 
-pub fn readString(self: *Self, buf: []u8) !usize {
+fn readString(self: *Self, buf: []u8) !usize {
     var i: usize = 0;
     while (i < buf.len) {
         const byte = try self.readByte();
@@ -130,59 +182,58 @@ pub fn readString(self: *Self, buf: []u8) !usize {
 }
 
 /// ECMA-48 Control Codes
-/// These are intended to be passed into the 'write' function of Term
-pub const cc = struct {
-    pub const clear = "\x1B[2J";
-    pub const bold_on = "\x1B[1m";
-    pub const reset_attrs = "\x1B[0m";
+const cc = struct {
+    const clear = "\x1B[2J";
+    const bold_on = "\x1B[1m";
+    const reset_attrs = "\x1B[0m";
 
     // Foreground colors
-    pub const fg_black = "\x1B[30m";
-    pub const fg_red = "\x1B[31m";
-    pub const fg_green = "\x1B[32m";
-    pub const fg_yellow = "\x1B[33m";
-    pub const fg_blue = "\x1B[34m";
-    pub const fg_magenta = "\x1B[35m";
-    pub const fg_cyan = "\x1B[36m";
-    pub const fg_white = "\x1B[37m";
+    const fg_black = "\x1B[30m";
+    const fg_red = "\x1B[31m";
+    const fg_green = "\x1B[32m";
+    const fg_yellow = "\x1B[33m";
+    const fg_blue = "\x1B[34m";
+    const fg_magenta = "\x1B[35m";
+    const fg_cyan = "\x1B[36m";
+    const fg_white = "\x1B[37m";
 
     // Background colors
-    pub const bg_black = "\x1B[40m";
-    pub const bg_red = "\x1B[41m";
-    pub const bg_green = "\x1B[42m";
-    pub const bg_yellow = "\x1B[43m";
-    pub const bg_blue = "\x1B[44m";
-    pub const bg_magenta = "\x1B[45m";
-    pub const bg_cyan = "\x1B[46m";
-    pub const bg_white = "\x1B[47m";
+    const bg_black = "\x1B[40m";
+    const bg_red = "\x1B[41m";
+    const bg_green = "\x1B[42m";
+    const bg_yellow = "\x1B[43m";
+    const bg_blue = "\x1B[44m";
+    const bg_magenta = "\x1B[45m";
+    const bg_cyan = "\x1B[46m";
+    const bg_white = "\x1B[47m";
 
-    pub const cursor = struct {
-        pub const home = "\x1B[H";
-        pub const hide = "\x1B[?25l";
-        pub const show = "\x1B[?25h";
+    const cursor = struct {
+        const home = "\x1B[H";
+        const hide = "\x1B[?25l";
+        const show = "\x1B[?25h";
 
         const set_pos_fmt_str = "\x1B[{d};{d}H";
 
         /// Set cursor with a comptime known position
         /// For runtime values, see Term.setCursorPos
-        pub fn setPos(comptime pos: CursorPos) []const u8 {
+        fn setPos(comptime pos: CursorPos) []const u8 {
             return fmt.comptimePrint(set_pos_fmt_str, .{ pos.row, pos.col });
         }
     };
 
-    pub const region = struct {
+    const region = struct {
         // Reset to full screen scrolling
-        pub const reset = "\x1B[r";
+        const reset = "\x1B[r";
 
         // Reverse line feed (scroll down when at top margin)
-        pub const reverse_lf = "\x1BM";
+        const reverse_lf = "\x1BM";
 
         // Normal line feed (scroll up when at bottom margin)
-        pub const normal_lf = "\x1B[1E";
+        const normal_lf = "\x1B[1E";
 
         const set_region_fmt_str = "\x1B[{d};{d}r";
 
-        pub fn set(r: Region) []const u8 {
+        fn set(r: Region) []const u8 {
             return fmt.comptimePrint(set_region_fmt_str, .{ r.top, r.bottom });
         }
     };

@@ -8,7 +8,7 @@ const Io = std.Io;
 const Dir = Io.Dir;
 const File = Io.File;
 
-const Term = @import("./term.zig");
+const Tui = @import("./tui.zig");
 
 const max_stack_len = 64;
 const max_item_len = 256; // SMS size!
@@ -70,37 +70,26 @@ const App = struct {
     stack: Stack,
     input_buf: [buf_size.input]u8 = .{0} ** buf_size.input,
     err_buf: [buf_size.err]u8 = .{0} ** buf_size.err,
-    term: Term,
+    tui: Tui,
 
     fn init(io: Io, file: File) !App {
-        var t = try Term.init(io);
-        try t.write(&.{ Term.cc.clear, Term.cc.cursor.hide });
-        try t.refresh();
-
-        return .{ .stack = try Stack.init(io, file), .term = t };
+        return .{
+            .stack = try Stack.init(io, file),
+            .tui = try Tui.init(io),
+        };
     }
 
     fn deinit(self: *App) void {
-        self.term.write(&.{Term.cc.clear}) catch unreachable;
-        self.term.refresh() catch unreachable;
-        self.term.deinit();
+        self.tui.deinit();
         self.stack.deinit();
     }
 
     fn mainLoop(self: *App) !void {
         while (true) {
-            try self.term.write(&.{ Term.cc.clear, Term.cc.cursor.home });
+            try self.tui.clearHome();
             try self.printStack();
-            try self.term.print(
-                "{s}{s}{s}{s}",
-                .{
-                    Term.cc.fg_red,
-                    self.err_buf,
-                    Term.cc.reset_attrs,
-                    Term.cc.cursor.home,
-                },
-            );
-            try self.term.refresh();
+            try self.tui.printRedCursorHome(&self.err_buf);
+            try self.tui.refresh();
             @memset(&self.err_buf, 0);
 
             self.handleInput() catch |err| {
@@ -115,7 +104,7 @@ const App = struct {
     }
 
     fn handleInput(self: *App) !void {
-        return switch (try self.term.readByte()) {
+        return switch (try self.tui.readByte()) {
             'q' => error.quit,
             's' => try self.stack.swap(),
             'd' => try self.stack.drop(),
@@ -131,42 +120,22 @@ const App = struct {
     fn readLine(self: *App) ![]const u8 {
         @memset(&self.input_buf, 0);
 
-        try self.term.write(&.{
-            Term.cc.clear,
-            Term.cc.cursor.setPos(.{ .row = 2, .col = 1 }),
-        });
+        try self.tui.clearSetPos(.{ .row = 2, .col = 1 });
         try self.printStack();
-        try self.term.write(&.{
-            Term.cc.cursor.home,
-            "> ",
-            Term.cc.cursor.show,
-        });
-        try self.term.rawMode(false);
-        try self.term.refresh();
 
-        defer {
-            self.term.rawMode(true) catch unreachable;
-            self.term.write(&.{Term.cc.cursor.hide}) catch unreachable;
-            self.term.refresh() catch unreachable;
-        }
-
-        const end = try self.term.readString(&self.input_buf);
-        self.input_buf[end] = '\n';
-        return self.input_buf[0 .. end + 1];
+        return self.tui.getLine(&self.input_buf);
     }
 
     fn printStack(self: *App) !void {
-        if (self.stack.items.len == 0) return;
+        const items = self.stack.items;
+        if (items.len == 0) return;
 
-        const top = self.stack.items.get(0);
-        try self.term.print(
-            "{s}{s}{s}",
-            .{ Term.cc.bold_on, top, Term.cc.reset_attrs },
-        );
+        const top = items.get(0);
+        try self.tui.printBold(top);
 
-        for (1..self.stack.items.len) |i| {
+        for (1..items.len) |i| {
             const item = self.stack.items.get(i);
-            try self.term.print("{s}", .{item});
+            try self.tui.print("{s}", .{item});
         }
     }
 };
@@ -284,7 +253,7 @@ const Items = struct {
         try File.setLength(self.file, self.io, self.offsets[self.len]);
     }
 
-    fn get(self: *Items, idx: usize) []u8 {
+    fn get(self: Items, idx: usize) []const u8 {
         const offset_idx = self.len - 1 - idx;
         const start = self.offsets[offset_idx];
         const end = self.offsets[offset_idx + 1];
