@@ -97,6 +97,7 @@ const App = struct {
                     error.quit => return,
                     else => {
                         _ = try fmt.bufPrint(&self.err_buf, "{}", .{err});
+                        return;
                     },
                 }
             };
@@ -127,154 +128,119 @@ const App = struct {
     }
 
     fn printStack(self: *App) !void {
-        const items = self.stack.items;
-        if (items.len == 0) return;
+        if (self.stack.abstr.len == 0) return;
 
-        const top = items.get(0);
+        const top = self.stack.get(0);
         try self.tui.printBold(top);
 
-        for (1..items.len) |i| {
-            const item = self.stack.items.get(i);
+        for (1..self.stack.abstr.len) |i| {
+            const item = self.stack.get(i);
             try self.tui.print("{s}", .{item});
         }
     }
 };
 
 const Stack = struct {
-    items: Items,
-    temp_a: [max_item_len]u8 = .{0} ** max_item_len,
-    temp_b: [max_item_len]u8 = .{0} ** max_item_len,
-    temp_c: [max_item_len]u8 = .{0} ** max_item_len,
-
-    fn init(io: Io, file: File) !Stack {
-        return .{ .items = try Items.init(io, file) };
-    }
-
-    fn deinit(self: *Stack) void {
-        self.items.deinit();
-    }
-
-    fn push(self: *Stack, item: []const u8) !void {
-        if (self.items.len >= max_stack_len) return error.StackOverflow;
-        try self.items.push(item);
-        try self.items.sync();
-    }
-
-    fn drop(self: *Stack) !void {
-        try self.items.ensureMinLen(1);
-        try self.items.drop();
-        try self.items.sync();
-    }
-
-    fn swap(self: *Stack) !void {
-        try self.items.ensureMinLen(2);
-        const a = self.items.get(0);
-        const b = self.items.get(1);
-
-        @memcpy(self.temp_a[0..a.len], a);
-        @memcpy(self.temp_b[0..b.len], b);
-
-        self.items.set(&.{
-            self.temp_b[0..b.len],
-            self.temp_a[0..a.len],
-        });
-        try self.items.sync();
-    }
-
-    fn rot(self: *Stack) !void {
-        try self.items.ensureMinLen(3);
-        const a = self.items.get(0);
-        const b = self.items.get(1);
-        const c = self.items.get(2);
-
-        @memcpy(self.temp_a[0..a.len], a);
-        @memcpy(self.temp_b[0..b.len], b);
-        @memcpy(self.temp_c[0..c.len], c);
-
-        self.items.set(&.{
-            self.temp_c[0..c.len],
-            self.temp_a[0..a.len],
-            self.temp_b[0..b.len],
-        });
-        try self.items.sync();
-    }
-};
-
-const Items = struct {
-    const max_offsets = max_stack_len + 1;
-
     file: File,
     io: Io,
     mm: File.MemoryMap,
-    offsets: [max_offsets]u16,
-    len: u8,
+    abstr: Abstraction,
 
-    fn init(io: Io, file: File) !Items {
+    fn init(io: Io, file: File) !Stack {
         const mm = try File.createMemoryMap(file, io, .{ .len = mmap_size });
         debug.assert(mm.memory.len == mmap_size);
 
         const stat = try File.stat(file, io);
-
-        var offsets = [_]u16{0} ** max_offsets;
-        var len: u8 = 0;
-
-        for (mm.memory[0..@intCast(stat.size)], 0..) |byte, i| {
-            if (byte == '\n') {
-                len += 1;
-                offsets[len] = @intCast(i + 1);
-            }
-        }
+        const bytes = mm.memory[0..@intCast(stat.size)];
 
         return .{
             .file = file,
             .io = io,
             .mm = mm,
-            .offsets = offsets,
-            .len = len,
+            .abstr = Abstraction.init(bytes),
         };
     }
 
-    fn deinit(self: *Items) void {
+    fn deinit(self: *Stack) void {
         self.mm.destroy(self.io);
     }
 
-    fn push(self: *Items, item: []const u8) !void {
-        const offset = self.offsets[self.len];
-        const bytes_written: u16 = @intCast(
-            try File.writePositional(self.file, self.io, &.{item}, offset),
-        );
-        self.len += 1;
-        self.offsets[self.len] = offset + bytes_written;
+    fn push(self: *Stack, item: []const u8) !void {
+        const offset = try self.abstr.appendOffset();
+        const bytes_written: u16 = @intCast(item.len);
+
+        @memcpy(self.mm.memory[@as(usize, offset)..][0..item.len], item);
+        try File.setLength(self.file, self.io, offset + bytes_written);
+
+        self.abstr.len += 1;
+        self.abstr.offsets[self.abstr.len] = offset + bytes_written;
+
+        try self.sync();
     }
 
-    fn drop(self: *Items) !void {
-        self.len -= 1;
-        try File.setLength(self.file, self.io, self.offsets[self.len]);
+    fn drop(self: *Stack) !void {
+        try self.ensureMinLen(1);
+        self.abstr.len -= 1;
+        try File.setLength(self.file, self.io, self.abstr.offsets[self.abstr.len]);
+        try self.sync();
     }
 
-    fn get(self: Items, idx: usize) []const u8 {
-        const offset_idx = self.len - 1 - idx;
-        const start = self.offsets[offset_idx];
-        const end = self.offsets[offset_idx + 1];
+    fn swap(self: *Stack) !void {
+        try self.ensureMinLen(2);
+        const a = self.get(0);
+        const b = self.get(1);
+
+        @memcpy(self.abstr.temp_a[0..a.len], a);
+        @memcpy(self.abstr.temp_b[0..b.len], b);
+
+        self.set(&.{
+            self.abstr.temp_b[0..b.len],
+            self.abstr.temp_a[0..a.len],
+        });
+        try self.sync();
+    }
+
+    fn rot(self: *Stack) !void {
+        try self.ensureMinLen(3);
+        const a = self.get(0);
+        const b = self.get(1);
+        const c = self.get(2);
+
+        @memcpy(self.abstr.temp_a[0..a.len], a);
+        @memcpy(self.abstr.temp_b[0..b.len], b);
+        @memcpy(self.abstr.temp_c[0..c.len], c);
+
+        self.set(&.{
+            self.abstr.temp_c[0..c.len],
+            self.abstr.temp_a[0..a.len],
+            self.abstr.temp_b[0..b.len],
+        });
+        try self.sync();
+    }
+
+    fn get(self: Stack, idx: usize) []const u8 {
+        const offset_idx = self.abstr.len - 1 - idx;
+        const start = self.abstr.offsets[offset_idx];
+        const end = self.abstr.offsets[offset_idx + 1];
 
         return self.mm.memory[start..end];
     }
 
-    fn set(self: *Items, items: []const []const u8) void {
+    fn set(self: *Stack, items: []const []const u8) void {
         for (items, 0..) |item, idx| {
-            const end = self.offsets[self.len - idx];
+            const end = self.abstr.offsets[self.abstr.len - idx];
             const start = end - item.len;
 
             @memcpy(self.mm.memory[start..end], item);
-            self.offsets[self.len - 1 - idx] = @intCast(start);
+            self.abstr.offsets[self.abstr.len - 1 - idx] = @intCast(start);
         }
     }
 
-    fn ensureMinLen(self: *Items, n: usize) !void {
-        if (self.len < n) return error.Underflow;
+    fn ensureMinLen(self: *Stack, n: usize) !void {
+        if (self.abstr.len < n) return error.Underflow;
     }
 
-    fn sync(self: *Items) !void {
+    fn sync(self: *Stack) !void {
         try self.mm.write(self.io);
     }
 };
@@ -285,7 +251,24 @@ const Abstraction = struct {
     temp_a: [max_item_len]u8 = .{0} ** max_item_len,
     temp_b: [max_item_len]u8 = .{0} ** max_item_len,
     temp_c: [max_item_len]u8 = .{0} ** max_item_len,
+    offsets: [max_offsets]u16 = .{0} ** max_offsets,
+    len: u8 = 0,
 
-    offsets: [max_offsets]u16,
-    len: u8,
+    fn init(bytes: []const u8) @This() {
+        var res: @This() = .{};
+
+        for (bytes, 0..) |byte, i| {
+            if (byte == '\n') {
+                res.len += 1;
+                res.offsets[res.len] = @intCast(i + 1);
+            }
+        }
+
+        return res;
+    }
+
+    fn appendOffset(self: @This()) !usize {
+        if (self.abstr.len >= max_stack_len) return error.StackOverflow;
+        return self.abstr.offsets[self.abstr.len];
+    }
 };
