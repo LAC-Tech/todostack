@@ -142,13 +142,12 @@ const App = struct {
 
 const Stack = struct {
     items: Items,
-    io: Io,
     temp_a: [max_item_len]u8 = .{0} ** max_item_len,
     temp_b: [max_item_len]u8 = .{0} ** max_item_len,
     temp_c: [max_item_len]u8 = .{0} ** max_item_len,
 
     fn init(io: Io, file: File) !Stack {
-        return .{ .items = try Items.init(io, file), .io = io };
+        return .{ .items = try Items.init(io, file) };
     }
 
     fn deinit(self: *Stack) void {
@@ -278,4 +277,15 @@ const Items = struct {
     fn sync(self: *Items) !void {
         try self.mm.write(self.io);
     }
+};
+
+const Abstraction = struct {
+    const max_offsets = max_stack_len + 1;
+
+    temp_a: [max_item_len]u8 = .{0} ** max_item_len,
+    temp_b: [max_item_len]u8 = .{0} ** max_item_len,
+    temp_c: [max_item_len]u8 = .{0} ** max_item_len,
+
+    offsets: [max_offsets]u16,
+    len: u8,
 };
