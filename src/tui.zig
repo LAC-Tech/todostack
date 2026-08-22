@@ -78,44 +78,20 @@ pub fn deinit(self: *Self) void {
     ) catch unreachable;
 }
 
-/// For runtime known values
-pub fn print(
-    self: *Self,
-    comptime format: []const u8,
-    args: anytype,
-) !void {
-    try self.writer.interface.print(format, args);
-}
-
-pub fn refresh(self: *Self) !void {
-    try self.writer.interface.flush();
-}
-
-// BEGIN TEMP FUNCTIONS
-
-pub fn clearHome(self: *Self) !void {
+pub fn renderFrame(self: *Self, err_buf: []const u8, items: anytype) !void {
     try self.write(&.{ cc.clear, cc.cursor.home });
-}
-
-pub fn printBold(self: *Self, s: []const u8) !void {
-    try self.print(
-        "{s}{s}{s}",
-        .{ cc.bold_on, s, cc.reset_attrs },
-    );
-}
-
-pub fn printRedCursorHome(self: *Self, s: []const u8) !void {
+    try self.printStack(items);
     try self.print(
         "{s}{s}{s}{s}",
-        .{ cc.fg_red, s, cc.reset_attrs, cc.cursor.home },
+        .{ cc.fg_red, err_buf, cc.reset_attrs, cc.cursor.home },
     );
+    try self.refresh();
 }
 
-pub fn clearSetPos(self: *Self, comptime pos: CursorPos) !void {
-    try self.write(&.{ cc.clear, cc.cursor.setPos(pos) });
-}
+pub fn getLine(self: *Self, input_buf: []u8, iter: anytype) ![]const u8 {
+    try self.write(&.{ cc.clear, cc.cursor.setPos(.{ .row = 2, .col = 1 }) });
+    try self.printStack(iter);
 
-pub fn getLine(self: *Self, input_buf: []u8) ![]const u8 {
     try self.write(&.{
         cc.cursor.home,
         "> ",
@@ -124,18 +100,44 @@ pub fn getLine(self: *Self, input_buf: []u8) ![]const u8 {
     try rawMode(&self.termios, false);
     try self.refresh();
 
-    defer {
-        rawMode(&self.termios, true) catch unreachable;
-        self.write(&.{cc.cursor.hide}) catch unreachable;
-        self.refresh() catch unreachable;
-    }
-
     const end = try self.readString(input_buf);
+
+    try rawMode(&self.termios, true);
+    try self.write(&.{cc.cursor.hide});
+    try self.refresh();
+
     input_buf[end] = '\n';
     return input_buf[0 .. end + 1];
 }
 
-// END TEMP FUNCTIONS
+pub fn readByte(self: *Self) !u8 {
+    var byte: u8 = undefined;
+    const n = try File.stdin().readStreaming(self.io, &.{(&byte)[0..1]});
+    if (n == 0) return error.EndOfStream;
+    return byte;
+}
+
+/// For runtime known values
+fn print(
+    self: *Self,
+    comptime format: []const u8,
+    args: anytype,
+) !void {
+    try self.writer.interface.print(format, args);
+}
+
+fn refresh(self: *Self) !void {
+    try self.writer.interface.flush();
+}
+
+fn printStack(self: *Self, items: anytype) !void {
+    const top: []const u8 = items.next() orelse return;
+    try self.print("{s}{s}{s}", .{ cc.bold_on, top, cc.reset_attrs });
+
+    while (items.next()) |item| {
+        try self.print("{s}", .{item});
+    }
+}
 
 fn rawMode(termios: *posix.termios, enabled: bool) !void {
     termios.lflag.ICANON = !enabled;
@@ -146,7 +148,7 @@ fn rawMode(termios: *posix.termios, enabled: bool) !void {
 }
 
 /// For comptime known values
-pub fn write(self: *Self, comptime codes: []const []const u8) !void {
+fn write(self: *Self, comptime codes: []const []const u8) !void {
     const combined = comptime blk: {
         var result: []const u8 = "";
         for (codes) |code| {
@@ -159,15 +161,8 @@ pub fn write(self: *Self, comptime codes: []const []const u8) !void {
 
 /// For runtime known cursor positons
 /// For comptime known, use cc.cursor.setPos
-pub fn setCursorPos(self: *Self, pos: CursorPos) !void {
+fn setCursorPos(self: *Self, pos: CursorPos) !void {
     try self.writer.interface.print(cc.cursor.set_pos_fmt_str, .{ pos.row, pos.col });
-}
-
-pub fn readByte(self: *Self) !u8 {
-    var byte: u8 = undefined;
-    const n = try File.stdin().readStreaming(self.io, &.{(&byte)[0..1]});
-    if (n == 0) return error.EndOfStream;
-    return byte;
 }
 
 fn readString(self: *Self, buf: []u8) !usize {

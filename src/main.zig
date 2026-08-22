@@ -70,7 +70,7 @@ const App = struct {
     io: Io,
     file: File,
     mm: File.MemoryMap,
-    tui: Tui,
+    ui: Tui,
     stack: Stack,
     input_buf: [buf_size.input]u8 = .{0} ** buf_size.input,
     err_buf: [buf_size.err]u8 = .{0} ** buf_size.err,
@@ -86,21 +86,19 @@ const App = struct {
             .file = file,
             .stack = Stack.init(bytes),
             .mm = mm,
-            .tui = try Tui.init(io),
+            .ui = try Tui.init(io),
         };
     }
 
     fn deinit(self: *App) void {
-        self.tui.deinit();
+        self.ui.deinit();
         self.mm.destroy(self.io);
     }
 
     fn mainLoop(self: *App) !void {
         while (true) {
-            try self.tui.clearHome();
-            try self.printStack();
-            try self.tui.printRedCursorHome(&self.err_buf);
-            try self.tui.refresh();
+            var iter = StackIter.init(&self.stack);
+            try self.ui.renderFrame(&self.err_buf, &iter);
             @memset(&self.err_buf, 0);
 
             self.handleInput() catch |err| {
@@ -116,7 +114,7 @@ const App = struct {
     }
 
     fn handleInput(self: *App) !void {
-        return switch (try self.tui.readByte()) {
+        return switch (try self.ui.readByte()) {
             'q' => error.quit,
             's' => {
                 try self.stack.swap();
@@ -133,8 +131,7 @@ const App = struct {
             },
             'p' => {
                 const line = try self.readLine();
-                if (2 > line.len) return;
-                const new_len = try self.stack.push(line);
+                const new_len = try self.stack.push(line) orelse return;
                 try File.setLength(self.file, self.io, new_len);
                 try self.mm.write(self.io);
             },
@@ -145,22 +142,8 @@ const App = struct {
     fn readLine(self: *App) ![]const u8 {
         @memset(&self.input_buf, 0);
 
-        try self.tui.clearSetPos(.{ .row = 2, .col = 1 });
-        try self.printStack();
-
-        return self.tui.getLine(&self.input_buf);
-    }
-
-    fn printStack(self: *App) !void {
-        if (self.stack.len == 0) return;
-
-        const top = self.stack.get(0);
-        try self.tui.printBold(top);
-
-        for (1..self.stack.len) |i| {
-            const item = self.stack.get(i);
-            try self.tui.print("{s}", .{item});
-        }
+        var iter = StackIter.init(&self.stack);
+        return self.ui.getLine(&self.input_buf, &iter);
     }
 };
 
@@ -189,7 +172,8 @@ const Stack = struct {
     }
 
     /// Returns new offset
-    fn push(self: *@This(), item: []const u8) !usize {
+    fn push(self: *@This(), item: []const u8) !?usize {
+        if (2 > item.len) return null;
         if (self.len >= max_stack_len) return error.StackOverflow;
         const offset = self.offsets[self.len];
         const new_offset = offset + item.len;
@@ -257,5 +241,20 @@ const Stack = struct {
             self.temp_b[0..b.len],
             self.temp_a[0..a.len],
         });
+    }
+};
+
+const StackIter = struct {
+    idx: usize = 0,
+    stack: *const Stack,
+
+    fn init(stack: *const Stack) @This() {
+        return .{ .idx = 0, .stack = stack };
+    }
+
+    pub fn next(self: *@This()) ?[]const u8 {
+        if (self.idx >= self.stack.len) return null;
+        const item = self.stack.get(self.idx);
+        return item;
     }
 };
