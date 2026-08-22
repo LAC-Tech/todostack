@@ -133,7 +133,7 @@ const App = struct {
             },
             'p' => {
                 const line = try self.readLine();
-                if (1 >= line.len) return; // just a new line, no content
+                if (2 > line.len) return;
                 const new_len = try self.stack.push(line);
                 try File.setLength(self.file, self.io, new_len);
                 try self.mm.write(self.io);
@@ -214,7 +214,7 @@ const Stack = struct {
         return self.content[start..end];
     }
 
-    fn set(self: *@This(), items: []const []const u8) void {
+    fn _replaceFromTop(self: *@This(), items: []const []const u8) void {
         for (items, 0..) |item, idx| {
             const end = self.offsets[self.len - idx];
             const start = end - item.len;
@@ -238,7 +238,7 @@ const Stack = struct {
         @memcpy(self.temp_b[0..b.len], b);
         @memcpy(self.temp_c[0..c.len], c);
 
-        self.set(&.{
+        self._replaceFromTop(&.{
             self.temp_c[0..c.len],
             self.temp_a[0..a.len],
             self.temp_b[0..b.len],
@@ -253,7 +253,7 @@ const Stack = struct {
         @memcpy(self.temp_a[0..a.len], a);
         @memcpy(self.temp_b[0..b.len], b);
 
-        self.set(&.{
+        self._replaceFromTop(&.{
             self.temp_b[0..b.len],
             self.temp_a[0..a.len],
         });

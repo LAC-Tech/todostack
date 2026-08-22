@@ -1,11 +1,3 @@
-# "Term" should become "Tui
+We need a vtable/interface thing to pass into App that abstracts away Tui and the std.IO stuff, so we can test app.
 
-- set up raw mode etc on init, clear it on deinit
-- make `rawMode` function private
-- hide control codes; make them private, make higher level methods
-
-Ideally the interface of Tui should be so abstract, you should be able to plug something Gui like in its place and it makes sense.
-
-# Lift "Tui" out of App.
-
-Everything in App should be plugged in, Hexagon style
+TODO: zig has some magic where if you only make one vtable it's fast, right?
