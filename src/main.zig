@@ -70,10 +70,10 @@ const App = struct {
     io: Io,
     file: File,
     mm: File.MemoryMap,
+    tui: Tui,
     stack: Stack,
     input_buf: [buf_size.input]u8 = .{0} ** buf_size.input,
     err_buf: [buf_size.err]u8 = .{0} ** buf_size.err,
-    tui: Tui,
 
     fn init(io: Io, file: File) !App {
         const mm = try File.createMemoryMap(file, io, .{ .len = mmap_size });
