@@ -4,9 +4,8 @@ const fmt = std.fmt;
 const mem = std.mem;
 const process = std.process;
 
-const Io = std.Io;
-const Dir = Io.Dir;
-const File = Io.File;
+const Dir = std.Io.Dir;
+const File = std.Io.File;
 
 const Tui = @import("./tui.zig");
 
@@ -22,8 +21,6 @@ const buf_size = struct {
 };
 
 pub fn main(init: process.Init) !void {
-    const io = init.io;
-
     var filename_buf = [_]u8{0} ** buf_size.filename;
     var args = init.minimal.args.iterate();
     _ = args.skip();
@@ -49,103 +46,122 @@ pub fn main(init: process.Init) !void {
         const filename =
             try fmt.bufPrint(&filename_buf, "{s}.{s}", .{ name, file_ext });
 
-        const f = try Dir.createFile(.cwd(), io, filename, .{
+        const f = try Dir.createFile(.cwd(), init.io, filename, .{
             .exclusive = true,
             .read = true,
         });
 
-        try File.sync(f, io);
+        try File.sync(f, init.io);
         break :blk f;
-    } else try Dir.openFile(.cwd(), io, arg1, .{ .mode = .read_write });
+    } else try Dir.openFile(.cwd(), init.io, arg1, .{ .mode = .read_write });
 
-    defer file.close(io);
-
-    var app = try App.init(io, file);
+    const fs = try RealFs.init(init.io, file);
+    const ui = try Tui.init(init.io);
+    var app = try App(RealFs, Tui).init(fs, ui);
     defer app.deinit();
 
     try app.mainLoop();
 }
 
-const App = struct {
-    io: Io,
+const RealFs = struct {
+    std_io: std.Io,
     file: File,
     mm: File.MemoryMap,
-    ui: Tui,
-    stack: Stack,
-    input_buf: [buf_size.input]u8 = .{0} ** buf_size.input,
-    err_buf: [buf_size.err]u8 = .{0} ** buf_size.err,
 
-    fn init(io: Io, file: File) !App {
-        const mm = try File.createMemoryMap(file, io, .{ .len = mmap_size });
-        debug.assert(mm.memory.len == mmap_size);
-
-        const stat = try File.stat(file, io);
-        const bytes = mm.memory[0..@intCast(stat.size)];
+    fn init(std_io: std.Io, file: File) !@This() {
         return .{
-            .io = io,
+            .std_io = std_io,
             .file = file,
-            .stack = Stack.init(bytes),
-            .mm = mm,
-            .ui = try Tui.init(io),
+            .mm = try File.createMemoryMap(file, std_io, .{ .len = mmap_size }),
         };
     }
 
-    fn deinit(self: *App) void {
-        self.ui.deinit();
-        self.mm.destroy(self.io);
+    fn deinit(self: *@This()) void {
+        self.mm.destroy(self.std_io);
+        self.file.close(self.std_io);
     }
 
-    fn mainLoop(self: *App) !void {
-        while (true) {
-            var iter = StackIter.init(&self.stack);
-            try self.ui.renderFrame(&self.err_buf, &iter);
-            @memset(&self.err_buf, 0);
-
-            self.handleInput() catch |err| {
-                switch (err) {
-                    error.quit => return,
-                    else => {
-                        _ = try fmt.bufPrint(&self.err_buf, "{}", .{err});
-                        return;
-                    },
-                }
-            };
-        }
+    fn initialBytes(self: @This()) ![]u8 {
+        const stat = try File.stat(self.file, self.std_io);
+        return self.mm.memory[0..@intCast(stat.size)];
     }
 
-    fn handleInput(self: *App) !void {
-        return switch (try self.ui.readByte()) {
-            'q' => error.quit,
-            's' => {
-                try self.stack.swap();
-                try self.mm.write(self.io);
-            },
-            'd' => {
-                const new_len = try self.stack.drop();
-                try File.setLength(self.file, self.io, new_len);
-                try self.mm.write(self.io);
-            },
-            'r' => {
-                try self.stack.rot();
-                try self.mm.write(self.io);
-            },
-            'p' => {
-                const line = try self.readLine();
-                const new_len = try self.stack.push(line) orelse return;
-                try File.setLength(self.file, self.io, new_len);
-                try self.mm.write(self.io);
-            },
-            else => {},
-        };
+    fn writeFile(self: *@This()) !void {
+        try self.mm.write(self.std_io);
     }
 
-    fn readLine(self: *App) ![]const u8 {
-        @memset(&self.input_buf, 0);
-
-        var iter = StackIter.init(&self.stack);
-        return self.ui.getLine(&self.input_buf, &iter);
+    fn setFileLen(self: *@This(), new_len: usize) !void {
+        try File.setLength(self.file, self.std_io, new_len);
     }
 };
+
+fn App(comptime Fs: type, comptime Ui: type) type {
+    return struct {
+        const Self = @This();
+        fs: Fs,
+        ui: Ui,
+        stack: Stack,
+        input_buf: [buf_size.input]u8 = .{0} ** buf_size.input,
+        err_buf: [buf_size.err]u8 = .{0} ** buf_size.err,
+
+        fn init(fs: Fs, ui: Ui) !Self {
+            const bytes: []u8 = try fs.initialBytes();
+            return .{ .fs = fs, .ui = ui, .stack = Stack.init(bytes) };
+        }
+
+        fn deinit(self: *Self) void {
+            self.ui.deinit();
+            self.fs.deinit();
+        }
+
+        fn mainLoop(self: *Self) !void {
+            while (true) {
+                var iter = self.stack.iter();
+                try self.ui.renderFrame(&self.err_buf, &iter);
+                @memset(&self.err_buf, 0);
+
+                self.handleInput() catch |err| {
+                    switch (err) {
+                        error.quit => return,
+                        else => {
+                            _ = try fmt.bufPrint(&self.err_buf, "{}", .{err});
+                            return;
+                        },
+                    }
+                };
+            }
+        }
+
+        fn handleInput(self: *Self) !void {
+            return switch (try self.ui.readByte()) {
+                'q' => error.quit,
+                's' => {
+                    try self.stack.swap();
+                    try self.fs.writeFile();
+                },
+                'd' => {
+                    const new_len = try self.stack.drop();
+                    try self.fs.setFileLen(new_len);
+                    try self.fs.writeFile();
+                },
+                'r' => {
+                    try self.stack.rot();
+                    try self.fs.writeFile();
+                },
+                'p' => {
+                    @memset(&self.input_buf, 0);
+                    var iter = self.stack.iter();
+                    const line: []const u8 =
+                        try self.ui.getLine(&self.input_buf, &iter);
+                    const new_len = try self.stack.push(line) orelse return;
+                    try self.fs.setFileLen(new_len);
+                    try self.fs.writeFile();
+                },
+                else => {},
+            };
+        }
+    };
+}
 
 const Stack = struct {
     const max_offsets = max_stack_len + 1;
@@ -242,19 +258,19 @@ const Stack = struct {
             self.temp_a[0..a.len],
         });
     }
-};
 
-const StackIter = struct {
-    idx: usize = 0,
-    stack: *const Stack,
-
-    fn init(stack: *const Stack) @This() {
-        return .{ .idx = 0, .stack = stack };
+    fn iter(self: *const @This()) Iter {
+        return .{ .idx = 0, .stack = self };
     }
 
-    pub fn next(self: *@This()) ?[]const u8 {
-        if (self.idx >= self.stack.len) return null;
-        const item = self.stack.get(self.idx);
-        return item;
-    }
+    const Iter = struct {
+        idx: usize = 0,
+        stack: *const Stack,
+
+        pub fn next(self: *@This()) ?[]const u8 {
+            if (self.idx >= self.stack.len) return null;
+            const item = self.stack.get(self.idx);
+            return item;
+        }
+    };
 };

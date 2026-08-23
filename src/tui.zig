@@ -162,7 +162,10 @@ fn write(self: *Self, comptime codes: []const []const u8) !void {
 /// For runtime known cursor positons
 /// For comptime known, use cc.cursor.setPos
 fn setCursorPos(self: *Self, pos: CursorPos) !void {
-    try self.writer.interface.print(cc.cursor.set_pos_fmt_str, .{ pos.row, pos.col });
+    try self.writer.interface.print(
+        cc.cursor.set_pos_fmt_str,
+        .{ pos.row, pos.col },
+    );
 }
 
 fn readString(self: *Self, buf: []u8) !usize {
